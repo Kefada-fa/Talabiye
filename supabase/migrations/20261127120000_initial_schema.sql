@@ -28,11 +28,24 @@ revoke all on schema private from public;
 -- 1. TABLES
 -- =====================================================================
 
+-- ---------- shop_categories ------------------------------------------
+-- Platform-wide list of shop types (Fashion, Toys, Health…), used to
+-- browse the mall directory. Managed by the platform, not by shops.
+create table public.shop_categories (
+  id          uuid primary key default gen_random_uuid(),
+  created_at  timestamptz not null default now(),
+  slug        text not null unique check (slug ~ '^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$'),
+  name        text not null check (char_length(name) between 1 and 50),
+  sort_order  integer not null default 0
+);
+
 -- ---------- shops ----------------------------------------------------
 create table public.shops (
   id              uuid primary key default gen_random_uuid(),
   created_at      timestamptz not null default now(),
   name            text not null check (char_length(name) between 1 and 100),
+  description     text check (char_length(description) <= 1000),  -- short "about the shop"
+  category_id     uuid references public.shop_categories (id) on delete set null,
   -- Used in the URL: <domain>/<slug>. 3–40 chars, lowercase letters,
   -- digits and dashes, can't start/end with a dash.
   slug            text not null unique
@@ -42,16 +55,24 @@ create table public.shops (
                     'admin', 'api', 'app', 'auth', 'login', 'logout', 'signup',
                     'register', 'account', 'dashboard', 'settings', 'health',
                     'help', 'support', 'about', 'pricing', 'terms', 'privacy',
-                    'contact', 'blog', 'www', 'static', 'assets', 'order', 'orders'
+                    'contact', 'blog', 'www', 'static', 'assets', 'order', 'orders',
+                    'shop', 'shops', 'store', 'stores', 'mall', 'explore', 'search',
+                    'category', 'categories', 'product', 'products', 'cart',
+                    'checkout', 'track'
                   )),
   -- Lebanese number in +961 format, e.g. +96170123456 / +9613123456
   whatsapp_number text check (whatsapp_number ~ '^\+961[0-9]{7,8}$'),
   delivery_fee    numeric(10,2) not null default 0 check (delivery_fee >= 0),  -- USD
   logo_url        text,
+  -- is_active: the storefront works and takes orders.
   is_active       boolean not null default true,
+  -- is_listed: the shop also appears in the public mall directory.
+  -- Off by default, so a shop can have a storefront without being listed.
+  is_listed       boolean not null default false,
   plan            text not null default 'free'
                   check (plan in ('free', 'starter', 'pro'))
 );
+create index shops_directory_idx on public.shops (category_id) where is_active and is_listed;
 
 -- ---------- shop_members ---------------------------------------------
 create table public.shop_members (
@@ -75,26 +96,35 @@ create table public.products (
   image_url    text,
   is_active    boolean not null default true,
   sort_order   integer not null default 0,
+  -- What the options are called, e.g. "Size", "Flavor", "Color".
+  -- Null when the product has no options.
+  option_label text check (char_length(option_label) between 1 and 50),
+  -- Stock for products WITHOUT options. Null = not tracked (unlimited).
+  -- Products WITH options track stock on each option instead.
+  stock        integer check (stock >= 0),
   -- Lets other tables check "this product belongs to the SAME shop".
   unique (id, shop_id)
 );
 create index products_shop_sort_idx on public.products (shop_id, sort_order);
 
 -- ---------- product_variants -----------------------------------------
+-- The options a customer picks from: sizes, flavors, colors, weights…
+-- For two kinds of option at once, combine them in the label ("Red / M").
 create table public.product_variants (
   id              uuid primary key default gen_random_uuid(),
   created_at      timestamptz not null default now(),
   shop_id         uuid not null references public.shops (id) on delete cascade,
   product_id      uuid not null,
-  label           text not null check (char_length(label) between 1 and 100),  -- e.g. "Size 4Y"
-  stock           integer not null default 0 check (stock >= 0),
+  label           text not null check (char_length(label) between 1 and 100),  -- e.g. "4Y", "Chocolate", "500g"
+  stock           integer check (stock >= 0),  -- null = not tracked (unlimited)
   price_override  numeric(10,2) check (price_override >= 0),  -- null = use product price
+  sort_order      integer not null default 0,  -- display order (S, M, L…)
   unique (id, shop_id),
   -- Variant must belong to a product of the same shop.
   foreign key (product_id, shop_id)
     references public.products (id, shop_id) on delete cascade
 );
-create index product_variants_product_id_idx on public.product_variants (product_id);
+create index product_variants_product_sort_idx on public.product_variants (product_id, sort_order);
 
 -- ---------- customers ------------------------------------------------
 create table public.customers (
@@ -104,6 +134,8 @@ create table public.customers (
   name        text not null check (char_length(name) between 1 and 100),
   -- Always stored as +961XXXXXXX(X); a trigger below normalizes it.
   phone       text not null check (phone ~ '^\+961[0-9]{7,8}$'),
+  -- Last-used area/address, handy to pre-fill the next order.
+  -- Each order keeps its own copy in orders.delivery_area/delivery_address.
   area        text check (char_length(area) <= 100),
   address     text check (char_length(address) <= 500),
   notes       text check (char_length(notes) <= 2000),  -- shop's private notes
@@ -130,6 +162,10 @@ create table public.orders (
                   check (deposit_status in ('none', 'requested', 'paid')),
   payment_method  text not null default 'cod'
                   check (payment_method in ('cod', 'whish')),
+  -- Where THIS order goes. Saved per order, so it never changes if the
+  -- customer later orders to a different address.
+  delivery_area    text check (char_length(delivery_area) <= 100),
+  delivery_address text not null check (char_length(delivery_address) between 1 and 500),
   notes           text check (char_length(notes) <= 2000),
   -- Random, unguessable token for a "confirm your order" link.
   confirm_token   text not null unique
@@ -472,8 +508,10 @@ begin
   returning id into v_customer_id;
 
   -- ---- 3. Create the order (totals filled in at the end) ------------
-  insert into public.orders (shop_id, customer_id, delivery_fee, payment_method, notes)
+  insert into public.orders (shop_id, customer_id, delivery_fee, payment_method,
+                             delivery_area, delivery_address, notes)
   values (v_shop.id, v_customer_id, v_shop.delivery_fee, p_payment_method,
+          nullif(trim(p_customer_area), ''), trim(p_customer_address),
           nullif(trim(p_notes), ''))
   returning id, order_number, confirm_token
     into v_order_id, v_order_number, v_confirm_token;
@@ -500,47 +538,68 @@ begin
     from public.products p
     where p.id = v_item.product_id
       and p.shop_id = v_shop.id
-      and p.is_active;
+      and p.is_active
+    for update;  -- lock the row so two buyers can't take the last one
     if not found then
       raise exception 'A product in your cart is no longer available';
     end if;
 
     if exists (select 1 from public.product_variants pv where pv.product_id = v_product.id) then
-      -- Product has variants (e.g. sizes): one must be chosen; stock is tracked.
+      -- Product has options (size, flavor, color…): one must be chosen.
       if v_item.variant_id is null then
-        raise exception 'Please choose an option for %', v_product.name;
+        raise exception 'Please choose a % for %',
+          lower(coalesce(v_product.option_label, 'option')), v_product.name;
       end if;
 
       select * into v_variant
       from public.product_variants pv
       where pv.id = v_item.variant_id
         and pv.product_id = v_product.id
-      for update;  -- lock this row so two buyers can't take the last one
+      for update;
       if not found then
         raise exception 'An option in your cart is no longer available';
       end if;
 
-      if v_variant.stock < v_item.quantity then
-        if v_variant.stock = 0 then
-          raise exception '% (%) is out of stock', v_product.name, v_variant.label;
-        else
-          raise exception 'Only % left of % (%)',
-            v_variant.stock, v_product.name, v_variant.label;
+      -- Stock is checked only when it's tracked (not null).
+      if v_variant.stock is not null then
+        if v_variant.stock < v_item.quantity then
+          if v_variant.stock = 0 then
+            raise exception '% (%) is out of stock', v_product.name, v_variant.label;
+          else
+            raise exception 'Only % left of % (%)',
+              v_variant.stock, v_product.name, v_variant.label;
+          end if;
         end if;
-      end if;
 
-      update public.product_variants pv
-        set stock = pv.stock - v_item.quantity
-      where pv.id = v_variant.id;
+        update public.product_variants pv
+          set stock = pv.stock - v_item.quantity
+        where pv.id = v_variant.id;
+      end if;
 
       v_variant_id := v_variant.id;
       v_price      := coalesce(v_variant.price_override, v_product.price);
-      v_name       := v_product.name || ' — ' || v_variant.label;
+      v_name       := v_product.name || ' — '
+                      || coalesce(v_product.option_label || ': ', '') || v_variant.label;
     else
-      -- Product without variants: no stock tracking.
+      -- Product without options: stock lives on the product (if tracked).
       if v_item.variant_id is not null then
         raise exception 'An option in your cart is no longer available';
       end if;
+
+      if v_product.stock is not null then
+        if v_product.stock < v_item.quantity then
+          if v_product.stock = 0 then
+            raise exception '% is out of stock', v_product.name;
+          else
+            raise exception 'Only % left of %', v_product.stock, v_product.name;
+          end if;
+        end if;
+
+        update public.products p
+          set stock = p.stock - v_item.quantity
+        where p.id = v_product.id;
+      end if;
+
       v_variant_id := null;
       v_price      := v_product.price;
       v_name       := v_product.name;
@@ -603,6 +662,7 @@ $$;
 -- =====================================================================
 -- 6. ROW LEVEL SECURITY (which ROWS each user can see/change)
 -- =====================================================================
+alter table public.shop_categories   enable row level security;
 alter table public.shops             enable row level security;
 alter table public.shop_members      enable row level security;
 alter table public.products          enable row level security;
@@ -613,6 +673,11 @@ alter table public.order_items       enable row level security;
 alter table public.delivery_outcomes enable row level security;
 -- delivery_outcomes intentionally has NO policies → no rows for anyone
 -- (only the security-definer functions above can touch it).
+
+-- ---------- shop_categories (read-only for everyone) ----------
+create policy "Anyone can view shop categories"
+  on public.shop_categories for select to anon, authenticated
+  using (true);
 
 -- ---------- shops ----------
 create policy "Public can view active shops"
@@ -699,9 +764,9 @@ create policy "Members can manage their order items"
 -- =====================================================================
 
 -- Start from zero, in case anything was granted by default.
-revoke all on public.shops, public.shop_members, public.products,
-              public.product_variants, public.customers, public.orders,
-              public.order_items, public.delivery_outcomes
+revoke all on public.shop_categories, public.shops, public.shop_members,
+              public.products, public.product_variants, public.customers,
+              public.orders, public.order_items, public.delivery_outcomes
   from public, anon, authenticated;
 
 -- Postgres lets EVERYONE run new functions by default — undo that.
@@ -720,7 +785,8 @@ revoke all on function public.get_phone_risk(text)           from public, anon, 
 grant usage on schema public to anon, authenticated;
 
 -- ---------- anon (visitors, not logged in) ----------
-grant select on public.shops, public.products, public.product_variants to anon;
+grant select on public.shop_categories, public.shops, public.products,
+                public.product_variants to anon;
 grant execute on function public.place_order(text, text, text, text, text, jsonb, text, text) to anon;
 
 -- ---------- authenticated (logged-in shop members) ----------
@@ -731,8 +797,10 @@ grant execute on function private.is_shop_owner(uuid)  to authenticated;
 
 -- shops: view, and edit settings — but NOT "plan" (billing) or "id".
 -- New shops will be created through a sign-up function in a later step.
+grant select on public.shop_categories to authenticated;
 grant select on public.shops to authenticated;
-grant update (name, slug, whatsapp_number, delivery_fee, logo_url, is_active)
+grant update (name, description, category_id, slug, whatsapp_number,
+              delivery_fee, logo_url, is_active, is_listed)
   on public.shops to authenticated;
 
 grant select, insert, update, delete on public.shop_members     to authenticated;
@@ -745,19 +813,21 @@ grant select, insert, update, delete on public.order_items      to authenticated
 -- set by the database and can't be changed by users.
 grant select on public.orders to authenticated;
 grant insert (shop_id, customer_id, status, subtotal, delivery_fee, total,
-              deposit_amount, deposit_status, payment_method, notes)
+              deposit_amount, deposit_status, payment_method,
+              delivery_area, delivery_address, notes)
   on public.orders to authenticated;
 grant update (customer_id, status, subtotal, delivery_fee, total,
-              deposit_amount, deposit_status, payment_method, notes)
+              deposit_amount, deposit_status, payment_method,
+              delivery_area, delivery_address, notes)
   on public.orders to authenticated;
 
 grant execute on function public.place_order(text, text, text, text, text, jsonb, text, text) to authenticated;
 grant execute on function public.get_phone_risk(text) to authenticated;
 
 -- ---------- service_role (trusted server code only, never the browser) ----------
-grant all on public.shops, public.shop_members, public.products,
-             public.product_variants, public.customers, public.orders,
-             public.order_items, public.delivery_outcomes
+grant all on public.shop_categories, public.shops, public.shop_members,
+             public.products, public.product_variants, public.customers,
+             public.orders, public.order_items, public.delivery_outcomes
   to service_role;
 
 -- Nothing at all is granted on public.delivery_outcomes to anon or authenticated.

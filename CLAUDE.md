@@ -7,6 +7,13 @@ A multi-shop ordering platform for Lebanese Instagram/WhatsApp sellers.
   **cash-on-delivery (COD)** orders.
 - Customers are mostly on phones → **mobile-first** design.
 - All prices are in **USD**.
+- **Any kind of shop** (clothes, toys, supplements, electronics…), so never
+  assume "sizes": products have optional options with a custom name
+  (`products.option_label`, e.g. "Size", "Flavor", "Color").
+- **Future goal: a "mall"** — a public directory where visitors browse all
+  listed shops by category and open any storefront. Not built yet, but keep
+  designs compatible (`shop_categories`, `shops.is_listed`, public catalog
+  readable across shops). Orders stay per shop.
 
 The product name is temporary. The current name, tagline, logo, domain and
 colors live in `config/brand.ts`.
