@@ -39,6 +39,29 @@ colors live in `config/brand.ts`.
   in the Supabase project): every new table/function needs its own GRANTs.
 - The public creates orders only via `place_order()`; `delivery_outcomes`
   is never granted to `anon`/`authenticated` (use `get_phone_risk()`).
+- `orders.confirm_token` must only ever reach the customer's own phone
+  (e.g. a WhatsApp link). Never return it to the browser that placed the order.
+- `supabase/tests/security_test.sql` checks the security rules (run it in the
+  SQL Editor; every row must say PASS). Re-run it after every migration and
+  add tests for every new table or function.
+
+## Known risks / later
+
+- **Refusal-list abuse:** a shop could mark fake "refused" orders to make a
+  phone number look risky everywhere. Plan: in `get_phone_risk`, count
+  refusals only from **distinct shops**, and only for orders **older than
+  24h** (so a just-created fake order doesn't count).
+- **Order spam:** `place_order` is public and has no rate limit yet. Add rate
+  limiting (e.g. per IP / per phone) before launch.
+- **Phone lookups:** any member of an active shop can call `get_phone_risk`
+  for any number. Add per-user rate limiting before launch.
+- **Never pre-fill customer details by phone on public pages:** `customers`
+  stores names/addresses; showing them to anyone who types a phone number
+  would leak personal data.
+- **Stock is not given back** when an order is cancelled or refused yet
+  (to do with order management).
+- **No shop sign-up yet:** shops/owners are created by admin SQL for now.
+- **Before going live:** remove or protect the `/health` page.
 
 ## Commands
 
