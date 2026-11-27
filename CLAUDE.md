@@ -21,6 +21,18 @@ colors live in `config/brand.ts`.
 - **Tailwind CSS** — styling; brand colors are available as
   `bg-brand-primary`, `text-brand-accent`, `text-brand-on-primary`, etc.
 
+## Database
+
+- Schema changes are SQL files in `supabase/migrations/` (named
+  `YYYYMMDDHHMMSS_description.sql`). Never edit a migration that has
+  already been run — add a new one instead. The user runs them in the
+  Supabase SQL Editor.
+- `supabase/seed.sql` creates the demo shop `kefada-demo` (re-runnable).
+- RLS is on for every table, and API grants are explicit (auto-grant is off
+  in the Supabase project): every new table/function needs its own GRANTs.
+- The public creates orders only via `place_order()`; `delivery_outcomes`
+  is never granted to `anon`/`authenticated` (use `get_phone_risk()`).
+
 ## Commands
 
 - `npm run dev` — start the dev server at http://localhost:3000
