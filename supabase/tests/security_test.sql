@@ -39,6 +39,7 @@ as $$
 declare
   v_stage  text := 'setup';
   v_count  bigint;
+  v_found  text;
   v_result text;
 begin
   begin
@@ -57,8 +58,14 @@ begin
     execute p_sql;
     get diagnostics v_count = row_count;
 
+    -- For admin checks that find problems, list what was found.
+    if p_expect = 'empty' and v_count > 0 and p_role is null then
+      execute format('select string_agg(t::text, '', '') from (%s) t', p_sql) into v_found;
+    end if;
+
     v_result := case p_expect
       when 'empty' then case when v_count = 0 then 'PASS (0 rows)'
+                             when v_found is not null then format('FAIL (found: %s)', v_found)
                              else format('FAIL (%s rows visible/changed!)', v_count) end
       when 'rows'  then case when v_count > 0 then 'PASS'
                              else 'FAIL (expected a result, got none)' end
