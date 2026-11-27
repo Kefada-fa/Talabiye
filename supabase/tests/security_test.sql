@@ -339,13 +339,18 @@ insert into sec_results (who, test, result) values
   pg_temp.sec_check(null, null, $q$select p.proname from pg_proc p
      where p.pronamespace in ('public'::regnamespace, 'private'::regnamespace) and p.prosecdef
        and not exists (select 1 from unnest(coalesce(p.proconfig, '{}')) c where c like 'search_path=%')$q$, 'empty')),
+-- (trigger / event-trigger functions are skipped: they can't be called
+--  directly, only by the database itself — e.g. Supabase's own
+--  rls_auto_enable() behind the "auto-enable RLS" setting)
 ('config', 'anon can run NO public function except place_order',
   pg_temp.sec_check(null, null, $q$select p.proname from pg_proc p
      where p.pronamespace = 'public'::regnamespace
+       and p.prorettype not in ('trigger'::regtype, 'event_trigger'::regtype)
        and has_function_privilege('anon', p.oid, 'EXECUTE') and p.proname <> 'place_order'$q$, 'empty')),
 ('config', 'logged-in users can run no public function except place_order/get_phone_risk',
   pg_temp.sec_check(null, null, $q$select p.proname from pg_proc p
      where p.pronamespace = 'public'::regnamespace
+       and p.prorettype not in ('trigger'::regtype, 'event_trigger'::regtype)
        and has_function_privilege('authenticated', p.oid, 'EXECUTE')
        and p.proname not in ('place_order', 'get_phone_risk')$q$, 'empty')),
 ('config', 'anon can run NO private function',
