@@ -62,6 +62,15 @@ join (values
 ) as v(product_name, label, stock, price_override, sort_order)
   on v.product_name = new_products.name;
 
+-- ---------- 3. Where new-order emails go ----------
+-- 👉 CHANGE THIS to your own email address (you can list several:
+--    array['you@gmail.com', 'partner@gmail.com']). Then re-run this file.
+-- (The settings row itself is created automatically for every shop.)
+update public.shop_notification_settings
+   set order_emails  = array['your-email@example.com'],
+       email_enabled = true
+ where shop_id = (select id from public.shops where slug = 'kefada-demo');
+
 -- ---------- Check the result ----------
 select p.name as product,
        coalesce(p.option_label || ': ' || v.label, '(no options)') as option,

@@ -45,6 +45,55 @@ colors live in `config/brand.ts`.
   SQL Editor; every row must say PASS). Re-run it after every migration and
   add tests for every new table or function.
 
+## Storefront
+
+- Routes: `/[slug]` (shop + products), `/[slug]/p/[productId]`,
+  `/[slug]/cart`, `/[slug]/checkout`, `/[slug]/order/[orderNumber]`.
+- **All UI text lives in `lib/i18n/en.ts`** (use `t` and `fill()` from
+  `@/lib/i18n`). Arabic (RTL) / French later = new dictionaries with the
+  same keys. Never hard-code UI text in components.
+- Catalog data: `lib/storefront/data.ts` (public client, `cache()`d per
+  request). With Cache Components, read `params`/cookies/DB inside `<Suspense>`.
+- Cart: `lib/cart/cart.ts` — localStorage per shop, all access in try/catch.
+  Cart prices are display-only; `place_order` decides real prices/stock.
+- Checkout: server action `app/[slug]/checkout/actions.ts` → `place_order`.
+  Has a honeypot field (`website`). The success page shows ONLY the receipt
+  from a short-lived httpOnly cookie scoped to that order's path — it never
+  reads orders from the DB, so other order numbers reveal nothing.
+
+## Notifications
+
+How it works:
+1. A new order is inserted → trigger `private.enqueue_order_created()` adds
+   one `notification_outbox` row per enabled channel + recipient, in the
+   SAME transaction (no order can be missed).
+   - email: one row per address in `shop_notification_settings.order_emails`
+     (if `email_enabled`)
+   - push: one row per `device_push_tokens` row of a shop member (if
+     `push_enabled`; off for now)
+2. After checkout, `after()` runs `processOutbox()` (`lib/notifications/outbox.ts`)
+   in the background — never slows down or breaks the checkout.
+3. `processOutbox` calls `claim_notifications()` (service_role only; SKIP
+   LOCKED, so no double sends), sends, then marks rows `sent`, back to
+   `pending` (retry) or `failed` after 3 attempts (`last_error` saved).
+4. Email: Resend via `RESEND_API_KEY`; without a key, emails are printed to
+   the server console and marked sent. Push: stub in `lib/notifications/push.ts`.
+
+Server-only secrets: `SUPABASE_SECRET_KEY` (admin client
+`lib/supabase/admin.ts`, bypasses RLS — only for the sender), `RESEND_API_KEY`.
+Never `NEXT_PUBLIC_`.
+
+Plan (no redesign needed):
+- **Web push (PWA):** service worker + VAPID keys; save the browser
+  subscription in `device_push_tokens` (platform `web`); implement `sendPush`.
+- **Native app push:** the app saves its FCM/APNs (or Expo) token in
+  `device_push_tokens` (platform `ios`/`android`); `sendPush` sends via
+  FCM/APNs; delete tokens the provider reports as invalid.
+- **Scheduled retries:** run `processOutbox()` on a cron (e.g. every minute)
+  so failed sends retry without waiting for the next order.
+- New event types (e.g. `order.status_changed`, customer emails) = new
+  `event_type` value + template; same outbox.
+
 ## Known risks / later
 
 - **Refusal-list abuse:** a shop could mark fake "refused" orders to make a
@@ -62,6 +111,12 @@ colors live in `config/brand.ts`.
   (to do with order management).
 - **No shop sign-up yet:** shops/owners are created by admin SQL for now.
 - **Before going live:** remove or protect the `/health` page.
+- **Cart prices can be stale** (saved when added); the success page and
+  WhatsApp message show the real database totals. Later: refresh cart
+  prices/stock from the server on the cart page.
+- **Outbox retries only run after a new checkout** until a cron is added.
+- **DB error messages are English only** (place_order); translate later by
+  mapping them to error codes.
 
 ## Commands
 

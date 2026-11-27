@@ -329,6 +329,143 @@ insert into sec_results (who, test, result) values
        jsonb_build_array(jsonb_build_object('product_id', (select id from public.products where name = 'Building Blocks Set'), 'quantity', 1)))$q$));
 
 -- =====================================================================
+-- H. NOTIFICATIONS (settings, push tokens, outbox)
+-- Temporary users:  …0002 = OWNER of the demo shop
+--                   …0003 = STAFF of the demo shop
+-- =====================================================================
+insert into sec_results (who, test, result) values
+-- anon
+('anon', 'read shop_notification_settings',
+  pg_temp.sec_check('anon', null, 'select * from public.shop_notification_settings', 'denied')),
+('anon', 'read device_push_tokens',
+  pg_temp.sec_check('anon', null, 'select * from public.device_push_tokens', 'denied')),
+('anon', 'read notification_outbox',
+  pg_temp.sec_check('anon', null, 'select * from public.notification_outbox', 'denied')),
+('anon', 'add a row to notification_outbox',
+  pg_temp.sec_check('anon', null, $q$insert into public.notification_outbox (shop_id, order_id, event_type, channel, recipient)
+     select shop_id, id, 'order.created', 'email', 'x@example.com' from public.orders limit 1$q$, 'denied')),
+('anon', 'call claim_notifications()',
+  pg_temp.sec_check('anon', null, 'select * from public.claim_notifications(10)', 'denied')),
+-- non-member
+('non-member', 'read notification settings',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001',
+    'select * from public.shop_notification_settings', 'empty')),
+('non-member', 'change notification emails',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001',
+    $q$update public.shop_notification_settings set order_emails = array['hacker@example.com']$q$, 'empty')),
+('non-member', 'read notification_outbox',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001',
+    'select * from public.notification_outbox', 'empty',
+    p_setup => $q$select public.place_order('kefada-demo', 'Test', '70123456', 'Beirut', 'Street 1',
+      jsonb_build_array(jsonb_build_object('product_id', (select id from public.products where name = 'Building Blocks Set'), 'quantity', 1)))$q$)),
+('non-member', 'read other users'' push tokens',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001',
+    'select * from public.device_push_tokens', 'empty',
+    p_setup => $q$insert into auth.users (id) values ('00000000-0000-4000-8000-000000000002');
+      insert into public.shop_members (shop_id, user_id, role)
+      select id, '00000000-0000-4000-8000-000000000002', 'owner' from public.shops where slug = 'kefada-demo';
+      insert into public.device_push_tokens (user_id, shop_id, platform, token)
+      select '00000000-0000-4000-8000-000000000002', id, 'web', 'tok-owner' from public.shops where slug = 'kefada-demo'$q$)),
+('non-member', 'register a push token for the demo shop',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001',
+    $q$insert into public.device_push_tokens (shop_id, platform, token)
+       select id, 'web', 'tok-hacker' from public.shops where slug = 'kefada-demo'$q$, 'denied')),
+('non-member', 'call claim_notifications()',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001',
+    'select * from public.claim_notifications(10)', 'denied')),
+('non-member', 'add a row to notification_outbox',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001',
+    $q$insert into public.notification_outbox (shop_id, order_id, event_type, channel, recipient)
+       values (gen_random_uuid(), gen_random_uuid(), 'order.created', 'email', 'x@example.com')$q$, 'denied')),
+-- owner / staff
+('owner', 'owner CAN read own notification settings (control)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    'select * from public.shop_notification_settings', 'rows',
+    p_setup => $q$insert into auth.users (id) values ('00000000-0000-4000-8000-000000000002');
+      insert into public.shop_members (shop_id, user_id, role)
+      select id, '00000000-0000-4000-8000-000000000002', 'owner' from public.shops where slug = 'kefada-demo'$q$)),
+('owner', 'owner CAN change own notification emails (control)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shop_notification_settings set order_emails = array['me@example.com'] returning id$q$, 'rows',
+    p_setup => $q$insert into auth.users (id) values ('00000000-0000-4000-8000-000000000002');
+      insert into public.shop_members (shop_id, user_id, role)
+      select id, '00000000-0000-4000-8000-000000000002', 'owner' from public.shops where slug = 'kefada-demo'$q$)),
+('owner', 'invalid email address is rejected',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shop_notification_settings set order_emails = array['not an email']$q$, 'error', 'check constraint',
+    p_setup => $q$insert into auth.users (id) values ('00000000-0000-4000-8000-000000000002');
+      insert into public.shop_members (shop_id, user_id, role)
+      select id, '00000000-0000-4000-8000-000000000002', 'owner' from public.shops where slug = 'kefada-demo'$q$)),
+('owner', 'owner CAN read own shop''s outbox (control)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    'select * from public.notification_outbox', 'rows',
+    p_setup => $q$insert into auth.users (id) values ('00000000-0000-4000-8000-000000000002');
+      insert into public.shop_members (shop_id, user_id, role)
+      select id, '00000000-0000-4000-8000-000000000002', 'owner' from public.shops where slug = 'kefada-demo';
+      select public.place_order('kefada-demo', 'Test', '70123456', 'Beirut', 'Street 1',
+        jsonb_build_array(jsonb_build_object('product_id', (select id from public.products where name = 'Building Blocks Set'), 'quantity', 1)))$q$)),
+('owner', 'owner cannot mark outbox rows as sent',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.notification_outbox set status = 'sent'$q$, 'denied',
+    p_setup => $q$insert into auth.users (id) values ('00000000-0000-4000-8000-000000000002');
+      insert into public.shop_members (shop_id, user_id, role)
+      select id, '00000000-0000-4000-8000-000000000002', 'owner' from public.shops where slug = 'kefada-demo'$q$)),
+('staff', 'staff cannot read notification settings',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    'select * from public.shop_notification_settings', 'empty',
+    p_setup => $q$insert into auth.users (id) values ('00000000-0000-4000-8000-000000000003');
+      insert into public.shop_members (shop_id, user_id, role)
+      select id, '00000000-0000-4000-8000-000000000003', 'staff' from public.shops where slug = 'kefada-demo'$q$)),
+('staff', 'staff cannot read the owner''s push tokens',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    'select * from public.device_push_tokens', 'empty',
+    p_setup => $q$insert into auth.users (id) values ('00000000-0000-4000-8000-000000000002'), ('00000000-0000-4000-8000-000000000003');
+      insert into public.shop_members (shop_id, user_id, role)
+      select id, '00000000-0000-4000-8000-000000000002', 'owner' from public.shops where slug = 'kefada-demo';
+      insert into public.shop_members (shop_id, user_id, role)
+      select id, '00000000-0000-4000-8000-000000000003', 'staff' from public.shops where slug = 'kefada-demo';
+      insert into public.device_push_tokens (user_id, shop_id, platform, token)
+      select '00000000-0000-4000-8000-000000000002', id, 'web', 'tok-owner' from public.shops where slug = 'kefada-demo'$q$)),
+('staff', 'staff CAN register own push token (control)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    $q$insert into public.device_push_tokens (shop_id, platform, token)
+       select id, 'android', 'tok-staff' from public.shops where slug = 'kefada-demo' returning id$q$, 'rows',
+    p_setup => $q$insert into auth.users (id) values ('00000000-0000-4000-8000-000000000003');
+      insert into public.shop_members (shop_id, user_id, role)
+      select id, '00000000-0000-4000-8000-000000000003', 'staff' from public.shops where slug = 'kefada-demo'$q$)),
+-- the trigger itself
+('database', 'new order automatically queues an email',
+  pg_temp.sec_check(null, null,
+    $q$select 1 from public.notification_outbox o join public.orders r on r.id = o.order_id
+       where o.channel = 'email' and o.status = 'pending' and o.recipient = 'trigger-test@example.com'$q$, 'rows',
+    p_setup => $q$update public.shop_notification_settings set order_emails = array['trigger-test@example.com'], email_enabled = true
+        where shop_id = (select id from public.shops where slug = 'kefada-demo');
+      select public.place_order('kefada-demo', 'Test', '70123456', 'Beirut', 'Street 1',
+        jsonb_build_array(jsonb_build_object('product_id', (select id from public.products where name = 'Building Blocks Set'), 'quantity', 1)))$q$)),
+('database', 'email turned off → no email queued',
+  pg_temp.sec_check(null, null,
+    $q$select 1 from public.notification_outbox o
+       where o.shop_id = (select id from public.shops where slug = 'kefada-demo') and o.channel = 'email'$q$, 'empty',
+    p_setup => $q$update public.shop_notification_settings set order_emails = array['trigger-test@example.com'], email_enabled = false
+        where shop_id = (select id from public.shops where slug = 'kefada-demo');
+      delete from public.notification_outbox where shop_id = (select id from public.shops where slug = 'kefada-demo');
+      select public.place_order('kefada-demo', 'Test', '70123456', 'Beirut', 'Street 1',
+        jsonb_build_array(jsonb_build_object('product_id', (select id from public.products where name = 'Building Blocks Set'), 'quantity', 1)))$q$)),
+('server', 'server CAN claim queued notifications (control)',
+  pg_temp.sec_check('service_role', null,
+    $q$select 1 from public.claim_notifications(10) c where c.status = 'sending' and c.attempts = 1$q$, 'rows',
+    p_setup => $q$update public.shop_notification_settings set order_emails = array['claim-test@example.com'], email_enabled = true
+        where shop_id = (select id from public.shops where slug = 'kefada-demo');
+      select public.place_order('kefada-demo', 'Test', '70123456', 'Beirut', 'Street 1',
+        jsonb_build_array(jsonb_build_object('product_id', (select id from public.products where name = 'Building Blocks Set'), 'quantity', 1)))$q$)),
+('anon', 'place_order receipt has items but no confirm_token',
+  pg_temp.sec_check('anon', null,
+    $q$select 1 from (select public.place_order('kefada-demo', 'Test', '70123456', 'Beirut', 'Street 1',
+       jsonb_build_array(jsonb_build_object('product_id', (select id from public.products where name = 'Building Blocks Set'), 'quantity', 2)))) as r(x)
+       where jsonb_array_length(x -> 'items') = 1 and not (x ? 'confirm_token')
+         and (x -> 'items' -> 0 ->> 'line_total')::numeric = 50$q$, 'rows'));
+
+-- =====================================================================
 -- G. CONFIGURATION checks (run as admin; each must find 0 problems)
 -- =====================================================================
 insert into sec_results (who, test, result) values
@@ -364,6 +501,12 @@ insert into sec_results (who, test, result) values
 ('config', 'nobody but admin/server can touch delivery_outcomes',
   pg_temp.sec_check(null, null, $q$select r from unnest(array['anon', 'authenticated']) r
      where has_table_privilege(r, 'public.delivery_outcomes', 'SELECT, INSERT, UPDATE, DELETE')$q$, 'empty')),
+('config', 'only the server can write notification_outbox',
+  pg_temp.sec_check(null, null, $q$select r from unnest(array['anon', 'authenticated']) r
+     where has_table_privilege(r, 'public.notification_outbox', 'INSERT, UPDATE, DELETE')$q$, 'empty')),
+('config', 'only the server can run claim_notifications',
+  pg_temp.sec_check(null, null, $q$select r from unnest(array['anon', 'authenticated']) r
+     where has_function_privilege(r, 'public.claim_notifications(integer)', 'EXECUTE')$q$, 'empty')),
 ('config', 'phone_hash_salt exists in Vault',
   pg_temp.sec_check(null, null, $q$select 1 from vault.secrets where name = 'phone_hash_salt'$q$, 'rows'));
 
