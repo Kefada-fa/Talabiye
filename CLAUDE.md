@@ -14,7 +14,10 @@ colors live in `config/brand.ts`.
 ## Tech stack
 
 - **Next.js** (App Router, TypeScript) — pages live in `app/`
-- **Supabase** — Postgres database + authentication (not set up yet)
+- **Supabase** — Postgres database + authentication. Client helpers in
+  `lib/supabase/`: `client.ts` (browser, "use client" code) and `server.ts`
+  (server components / server actions; `await createClient()`). Settings come
+  from `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`.
 - **Tailwind CSS** — styling; brand colors are available as
   `bg-brand-primary`, `text-brand-accent`, `text-brand-on-primary`, etc.
 
