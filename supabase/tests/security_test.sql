@@ -43,6 +43,11 @@ declare
   v_result text;
 begin
   begin
+    -- Start every test from the demo shop exactly as seed.sql made it
+    -- (your real orders/stock are only hidden inside this test, which is
+    -- undone right after — nothing is really deleted).
+    perform pg_temp.reset_demo();
+
     if p_setup is not null then
       execute p_setup;
     end if;
@@ -154,6 +159,73 @@ as $f$
   insert into public.shop_members (shop_id, user_id, role)
   select id, p_uid, p_role from public.shops where slug = 'kefada-demo'
   on conflict (shop_id, user_id) do update set role = excluded.role;
+$f$;
+
+-- Puts the demo shop back exactly as seed.sql made it: no orders or
+-- customers, seed stock/prices/costs/settings. Called at the start of EVERY
+-- test inside its savepoint, so it is always undone afterwards — your real
+-- data is never changed. This makes the tests pass even after you have
+-- used the shop (placed orders, changed stock or settings).
+create or replace function pg_temp.reset_demo()
+returns void
+language plpgsql
+as $f$
+declare
+  v_shop uuid := (select id from public.shops where slug = 'kefada-demo');
+begin
+  if v_shop is null then
+    return;
+  end if;
+
+  delete from public.orders    where shop_id = v_shop;   -- lines, history, outcomes, outbox follow
+  delete from public.customers where shop_id = v_shop;
+  delete from public.product_reviews where shop_id = v_shop;
+
+  update public.shops
+     set is_active = true, delivery_on = true, pickup_on = false, delivery_mode = 'governorate',
+         delivery_fixed = 4, free_delivery_on = true, free_delivery_above = 60,
+         policy_on = true, reviews_on = false, reviews_need_approval = true
+   where id = v_shop;
+
+  insert into public.shop_delivery_fees (shop_id, governorate, fee)
+  select v_shop, g.name,
+         case g.name when 'Beirut' then 3 when 'Mount Lebanon' then 4 when 'Akkar' then null else 5 end
+  from public.lebanon_governorates g
+  on conflict (shop_id, governorate) do update set fee = excluded.fee;
+
+  update public.shop_private_settings set invoice_prefix = 'KF' where shop_id = v_shop;
+  update public.shop_notification_settings
+     set order_emails = array['shop@example.com'], email_enabled = true, push_enabled = false
+   where shop_id = v_shop;
+
+  update public.products p
+     set is_active = true,
+         price      = case p.name when 'Cotton T-Shirt' then 12 when 'Whey Protein 1kg' then 35
+                                  when 'Building Blocks Set' then 25 when 'Kids Hoodie' then 22 else p.price end,
+         sale_price = case p.name when 'Cotton T-Shirt' then 10 else null end,
+         stock      = case p.name when 'Building Blocks Set' then 4 else null end,
+         code       = case p.name when 'Cotton T-Shirt' then 'TS-1001' when 'Whey Protein 1kg' then 'WP-2001'
+                                  when 'Building Blocks Set' then 'TY-3001' when 'Kids Hoodie' then 'HD-4001' else p.code end
+   where p.shop_id = v_shop;
+
+  update public.product_variants v
+     set stock = case p.name || ':' || v.label
+                   when 'Cotton T-Shirt:2Y' then 5  when 'Cotton T-Shirt:4Y' then 8  when 'Cotton T-Shirt:6Y' then 0
+                   when 'Whey Protein 1kg:Chocolate' then 10 when 'Whey Protein 1kg:Vanilla' then 3
+                   when 'Whey Protein 1kg:Cookies & Cream' then 2
+                   when 'Kids Hoodie:Red / S' then 2  when 'Kids Hoodie:Red / M' then 0  when 'Kids Hoodie:Red / L' then 3
+                   when 'Kids Hoodie:Navy / S' then 4 when 'Kids Hoodie:Navy / M' then 1 when 'Kids Hoodie:Navy / L' then 0
+                   else v.stock end,
+         price_override = case when p.name || ':' || v.label = 'Whey Protein 1kg:Cookies & Cream' then 38 else null end
+    from public.products p
+   where p.id = v.product_id and p.shop_id = v_shop;
+
+  delete from public.product_costs where shop_id = v_shop;
+  insert into public.product_costs (shop_id, product_id, wholesale_price)
+  select v_shop, p.id, case p.name when 'Cotton T-Shirt' then 5 when 'Whey Protein 1kg' then 20 else 12 end
+  from public.products p
+  where p.shop_id = v_shop and p.name in ('Cotton T-Shirt', 'Whey Protein 1kg', 'Building Blocks Set');
+end;
 $f$;
 
 -- Moves the most recent order to "paid" (as admin).
@@ -412,7 +484,8 @@ insert into sec_results (who, test, result) values
          and r ->> 'message' like '%sold out%'$q$, 'rows')),
 ('server', 'stock problem saves NOTHING',
   pg_temp.sec_check('service_role', null,
-    $q$select pg_temp.demo_order('Building Blocks Set', 5); select 1 from public.orders$q$, 'empty')),
+    $q$select pg_temp.demo_order('Building Blocks Set', 5);
+       select 1 from public.orders where shop_id = (select id from public.shops where slug = 'kefada-demo')$q$, 'empty')),
 ('server', 'stock is held when the order is placed (2 options)',
   pg_temp.sec_check('service_role', null,
     $q$select pg_temp.demo_order('Kids Hoodie', 2, p_variant => 'Navy / S');
