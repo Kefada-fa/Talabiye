@@ -141,6 +141,34 @@ FEATURES only, never for product rules.**
 - The full Kefada-style storefront comes in Step 10; Step 6 kept UI changes
   minimal.
 
+## Back office (/dashboard)
+
+- **Design (approved D1)**: tokens live in ONE place — the `@theme` block
+  "BACK-OFFICE DESIGN TOKENS" in `app/globals.css` (`bg-bo-sidebar`,
+  `bg-bo-accent`, `text-bo-muted`, `bg-bo-attention-bg`, `rounded-bo-card`,
+  `bg-status-*-bg` / `text-status-*-fg`…). Fonts: `lib/backoffice/fonts.ts`
+  (`font-bo-heading` Space Grotesk, `font-bo-body` Inter). This is the
+  PLATFORM's look; shop branding (storefront) stays separate. Reuse
+  `StatusChip`, `Card`, `PageTitle`, `ComingSoonCard` (`components/backoffice/`).
+  Buttons/links ≥ 44px tall (`min-h-11`), real `<button>`/`<a>`, labels on inputs.
+- **Auth**: Supabase email + password. `/login`, `/forgot-password`,
+  `/reset-password`, `/auth/confirm` (email links), actions in
+  `lib/auth/actions.ts`. `proxy.ts` refreshes the session and sends
+  logged-out `/dashboard` visitors to `/login`. No public sign-up (Step 18).
+  `next` redirects are limited to `/dashboard…` (`lib/auth/redirect.ts`).
+- **Every /dashboard page** gets `getDashboardContext()` (`lib/backoffice/context.ts`):
+  not logged in → `/login`; no shop → "No shop yet"; several shops → switcher,
+  last choice in the `bo_shop` cookie (only set if the user is a member).
+  All reads use the user's own session (RLS) — never the secret key.
+- Home numbers: `shop_dashboard_summary(shop_id)` (security invoker, refuses
+  non-members). The unconfirmed badge refreshes on every page change and
+  every 60 s (`getUnconfirmedCountAction`).
+- Phone (< 768px): top bar + bottom tabs (Home, Invoices, Inventory,
+  Customers, More). Computer: dark sidebar.
+- Making someone a shop owner (until shop sign-up exists):
+  `supabase/snippets/make_shop_owner.sql` (email typed there, never in code).
+  Re-running `seed.sql` removes the demo shop's members → run it again.
+
 ## Notifications
 
 How it works:
@@ -188,7 +216,12 @@ Plan (no redesign needed):
 - **Never pre-fill customer details by phone on public pages:** `customers`
   stores names/addresses; showing them to anyone who types a phone number
   would leak personal data.
-- **No shop sign-up yet:** shops/owners are created by admin SQL for now.
+- **No shop sign-up yet:** shops/owners are created by admin SQL for now
+  (`supabase/snippets/make_shop_owner.sql`).
+- **Password reset emails** need Supabase → Authentication → URL
+  Configuration: Site URL = APP_URL and `<APP_URL>/auth/confirm` in Redirect
+  URLs (localhost now, the real domain at launch). Supabase's built-in email
+  sender is rate-limited; set up custom SMTP before launch.
 - **Imports (Step 20):** `display_number` accepts imported numbers like
   OLD-0001, but imported orders still take the next `order_number`; the
   import step must decide how old numbers and statuses are inserted (the

@@ -1151,6 +1151,41 @@ insert into sec_results (who, test, result) values
       select public.submit_review(pg_temp.review_token(), (select id from public.products where name = 'Building Blocks Set'), 5, 'Rania', 'x')$q$));
 
 -- =====================================================================
+-- K. BACK-OFFICE HOME NUMBERS (Step 7): shop_dashboard_summary
+-- =====================================================================
+insert into sec_results (who, test, result) values
+('owner', 'owner CAN get their shop''s numbers (control)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    format('select 1 from public.shop_dashboard_summary(%L) where unconfirmed_count = 1',
+           (select id from public.shops where slug = 'kefada-demo')), 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner');
+      select pg_temp.demo_order()$q$)),
+('owner', 'numbers are right (unconfirmed, pending + total, month orders + sales without delivery)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    format($q$select 1 from public.shop_dashboard_summary(%L)
+       where unconfirmed_count = 1 and pending_count = 1 and pending_total = 28
+         and month_orders = 1 and month_sales = 25$q$,
+           (select id from public.shops where slug = 'kefada-demo')), 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner');
+      select pg_temp.demo_order();
+      update public.orders set status = 'pending' where id = pg_temp.last_order_id();
+      select pg_temp.demo_order('Whey Protein 1kg', 1, p_variant => 'Chocolate')$q$)),
+('staff', 'staff CAN get their shop''s numbers (control)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    format('select * from public.shop_dashboard_summary(%L)', (select id from public.shops where slug = 'kefada-demo')), 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('non-member', 'get ANOTHER shop''s numbers',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001',
+    format('select * from public.shop_dashboard_summary(%L)', (select id from public.shops where slug = 'kefada-demo')), 'denied',
+    p_setup => $q$select pg_temp.demo_order()$q$)),
+('anon', 'get a shop''s numbers',
+  pg_temp.sec_check('anon', null,
+    format('select * from public.shop_dashboard_summary(%L)', (select id from public.shops where slug = 'kefada-demo')), 'denied')),
+('database', 'shop address "forgot-password" is reserved',
+  pg_temp.sec_check(null, null,
+    $q$insert into public.shops (name, slug) values ('X', 'forgot-password')$q$, 'error', 'shops_slug_not_reserved_step7'));
+
+-- =====================================================================
 -- G. CONFIGURATION checks (run as admin; each must find 0 problems)
 -- =====================================================================
 insert into sec_results (who, test, result) values
@@ -1175,7 +1210,8 @@ insert into sec_results (who, test, result) values
        and p.prorettype not in ('trigger'::regtype, 'event_trigger'::regtype)
        and has_function_privilege('authenticated', p.oid, 'EXECUTE')
        and p.proname not in ('get_phone_risk',
-                             'confirm_order', 'mark_paid', 'cancel_order', 'mark_refused')$q$, 'empty')),
+                             'confirm_order', 'mark_paid', 'cancel_order', 'mark_refused',
+                             'shop_dashboard_summary')$q$, 'empty')),
 ('config', 'anon can run NO private function',
   pg_temp.sec_check(null, null, $q$select p.proname from pg_proc p
      where p.pronamespace = 'private'::regnamespace and has_function_privilege('anon', p.oid, 'EXECUTE')$q$, 'empty')),

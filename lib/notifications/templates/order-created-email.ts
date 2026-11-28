@@ -14,13 +14,12 @@ function esc(value: string): string {
 }
 
 /**
- * Back-office link for an order.
- * PLACEHOLDER: the back office doesn't exist yet; the URL will work once
- * we build /dashboard. Set APP_URL in .env.local (e.g. your live domain).
+ * Back-office link for an order (the invoice page).
+ * Set APP_URL in .env.local (e.g. your live domain).
  */
 export function orderBackOfficeUrl(orderId: string): string {
   const base = (process.env.APP_URL ?? "http://localhost:3000").replace(/\/+$/, "");
-  return `${base}/dashboard/orders/${orderId}`;
+  return `${base}/dashboard/invoices/${orderId}`;
 }
 
 export function buildOrderCreatedEmail(order: OrderDetails): {

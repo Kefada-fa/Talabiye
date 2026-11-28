@@ -15,6 +15,52 @@
   --color-brand-primary: var(--brand-primary);
   --color-brand-accent: var(--brand-accent);
   --color-brand-on-primary: var(--brand-on-primary);
+
+  /* Back-office fonts (loaded in lib/backoffice/fonts.ts) */
+  --font-bo-heading: var(--font-space-grotesk), ui-sans-serif, system-ui, sans-serif;
+  --font-bo-body: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+}
+
+/* =====================================================================
+   BACK-OFFICE DESIGN TOKENS (approved D1 design).
+   The PLATFORM's own look for /dashboard and the login pages — every
+   back-office screen uses these names (bg-bo-accent, text-bo-muted,
+   rounded-bo-card…). Shop branding (storefront) stays separate.
+   ===================================================================== */
+@theme {
+  /* Layout */
+  --color-bo-sidebar: #16181d;          /* dark sidebar */
+  --color-bo-sidebar-active: #2a2e36;   /* active menu item */
+  --color-bo-sidebar-text: #c9ccd3;     /* menu text on the dark sidebar */
+  --color-bo-page: #f6f6f3;             /* page background */
+  --color-bo-card: #ffffff;             /* cards */
+  --color-bo-border: #e4e4df;           /* card borders */
+  --color-bo-ink: #16181d;              /* main text */
+  --color-bo-muted: #5b606b;            /* secondary text */
+
+  /* Actions */
+  --color-bo-accent: #0f766e;           /* main teal */
+  --color-bo-accent-hover: #0b5a54;
+
+  /* Attention (amber) */
+  --color-bo-attention: #f2b544;
+  --color-bo-attention-bg: #fff4d9;
+  --color-bo-attention-text: #5c3a00;
+
+  /* Order status chips (background / text) */
+  --color-status-unconfirmed-bg: #fff4d9;
+  --color-status-unconfirmed-fg: #5c3a00;
+  --color-status-pending-bg: #e3eefb;
+  --color-status-pending-fg: #1d4e89;
+  --color-status-paid-bg: #e1f3ea;
+  --color-status-paid-fg: #1c5e3b;
+  --color-status-cancelled-bg: #eeeeea;
+  --color-status-cancelled-fg: #3f434b;
+  --color-status-refused-bg: #fde8e7;
+  --color-status-refused-fg: #8c1d18;
+
+  /* Shapes */
+  --radius-bo-card: 16px;
 }
 
 @media (prefers-color-scheme: dark) {
