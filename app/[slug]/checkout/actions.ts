@@ -27,11 +27,24 @@ export type StockProblem = {
   available: number;
 };
 
-export type CheckoutState = { error: string | null; stockProblems?: StockProblem[] };
+/** A price that changed since the item was put in the cart. */
+export type PriceChange = {
+  productId: string;
+  variantId: string | null;
+  product: string;
+  option: string | null;
+  oldPrice: number;
+  newPrice: number;
+  listPrice: number;
+};
+
+export type CheckoutState = { error: string | null; stockProblems?: StockProblem[]; priceChanges?: PriceChange[] };
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-type OrderItemInput = { product_id: string; variant_id: string | null; quantity: number };
+// expected_price = the unit price the customer saw in the cart; place_order
+// refuses (saves nothing) if the real price is different.
+type OrderItemInput = { product_id: string; variant_id: string | null; quantity: number; expected_price?: number };
 
 /** Turns the cart sent by the browser into place_order's item list (or null). */
 function parseCart(raw: FormDataEntryValue | null): OrderItemInput[] | null {
@@ -48,7 +61,14 @@ function parseCart(raw: FormDataEntryValue | null): OrderItemInput[] | null {
       if (typeof productId !== "string" || !UUID_RE.test(productId)) return null;
       if (variantId !== null && (typeof variantId !== "string" || !UUID_RE.test(variantId))) return null;
       if (!Number.isInteger(quantity) || (quantity as number) < 1 || (quantity as number) > MAX_QTY_PER_ITEM) return null;
-      items.push({ product_id: productId, variant_id: variantId as string | null, quantity: quantity as number });
+      const price = e?.unitPrice;
+      if (price !== undefined && (typeof price !== "number" || !Number.isFinite(price) || price < 0 || price > 1000000)) return null;
+      items.push({
+        product_id: productId,
+        variant_id: variantId as string | null,
+        quantity: quantity as number,
+        ...(typeof price === "number" ? { expected_price: Math.round(price * 100) / 100 } : {}),
+      });
     }
     return items;
   } catch {
@@ -73,8 +93,17 @@ function friendlyError(error: { code?: string; message?: string }): string {
 type PlaceOrderReply =
   | {
       ok: false;
-      error: "stock";
+      error: "stock" | "prices";
       message: string;
+      price_changes?: {
+        product_id: string;
+        variant_id: string | null;
+        product: string;
+        option: string | null;
+        old_price: number;
+        new_price: number;
+        list_price: number;
+      }[];
       stock_problems: {
         product_id: string;
         variant_id: string | null;
@@ -186,11 +215,21 @@ export async function placeOrderAction(
 
   const reply = data as PlaceOrderReply;
 
-  // Not enough stock: nothing was saved. Send the list back so the
-  // customer can fix the cart with one tap.
+  // Not enough stock and/or prices changed: nothing was saved. Send the
+  // lists back so the customer can fix the cart with one tap.
   if (!reply.ok) {
+    const priceChanges = (reply.price_changes ?? []).map((p) => ({
+      productId: p.product_id,
+      variantId: p.variant_id,
+      product: p.product,
+      option: p.option,
+      oldPrice: Number(p.old_price),
+      newPrice: Number(p.new_price),
+      listPrice: Number(p.list_price),
+    }));
     return {
-      error: reply.message,
+      error: priceChanges.length > 0 && reply.stock_problems.length === 0 ? t.checkout.pricesChangedTitle : reply.message,
+      priceChanges,
       stockProblems: reply.stock_problems.map((p) => ({
         productId: p.product_id,
         variantId: p.variant_id,

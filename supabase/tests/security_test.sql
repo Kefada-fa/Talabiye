@@ -234,6 +234,15 @@ begin
                                   else p.categories end::text[]
    where p.shop_id = v_shop;
 
+  -- Items YOU added to the demo shop (not from seed.sql) and real photos
+  -- don't count in the tests: no collection/categories, no photos here.
+  -- (Undone right after each test, like everything in reset_demo.)
+  update public.products p
+     set collection = null, categories = '{}'
+   where p.shop_id = v_shop
+     and p.name not in ('Cotton T-Shirt', 'Whey Protein 1kg', 'Building Blocks Set', 'Kids Hoodie');
+  delete from public.product_photos where shop_id = v_shop;
+
   -- Catalog lists + option presets as seed.sql makes them.
   perform set_config('app.rename_catalog_label', 'on', true);
   delete from public.shop_catalog_labels where shop_id = v_shop;
@@ -2139,6 +2148,47 @@ insert into sec_results (who, test, result) values
   pg_temp.sec_check('anon', null,
     format('select * from public.product_buyers(%L)', (select id from public.products where name = 'Building Blocks Set')),
     'denied'));
+
+-- =====================================================================
+-- N. CHECKOUT PRICE CHECK: never charge a price the customer didn't see
+-- =====================================================================
+insert into sec_results (who, test, result) values
+('place_order', 'price changed since the cart: refused, nothing saved',
+  pg_temp.sec_check(null, null,
+    $q$select 1 where (pg_temp.order_with(jsonb_build_array(jsonb_build_object(
+         'product_id', (select id from public.products where name = 'Building Blocks Set'),
+         'variant_id', null, 'quantity', 1, 'expected_price', 20))) ->> 'error') = 'prices'
+       and not exists (select 1 from public.orders o join public.shops s on s.id = o.shop_id where s.slug = 'kefada-demo')$q$, 'rows')),
+('place_order', 'price change lists old and new price',
+  pg_temp.sec_check(null, null,
+    $q$select 1 from jsonb_array_elements(pg_temp.order_with(jsonb_build_array(jsonb_build_object(
+         'product_id', (select id from public.products where name = 'Building Blocks Set'),
+         'variant_id', null, 'quantity', 1, 'expected_price', 20))) -> 'price_changes') c
+       where (c ->> 'old_price')::numeric = 20 and (c ->> 'new_price')::numeric = 25$q$, 'rows')),
+('place_order', 'same price as the cart: order placed (control)',
+  pg_temp.sec_check(null, null,
+    $q$select 1 where (pg_temp.order_with(jsonb_build_array(jsonb_build_object(
+         'product_id', (select id from public.products where name = 'Building Blocks Set'),
+         'variant_id', null, 'quantity', 1, 'expected_price', 25))) ->> 'ok')::boolean$q$, 'rows')),
+('place_order', 'a sale that started counts as a price change (cart $12, now $10)',
+  pg_temp.sec_check(null, null,
+    $q$select 1 where (pg_temp.order_with(jsonb_build_array(jsonb_build_object(
+         'product_id', (select id from public.products where name = 'Cotton T-Shirt'),
+         'variant_id', (select v.id from public.product_variants v join public.products p on p.id = v.product_id
+                        where p.name = 'Cotton T-Shirt' and v.label = '4Y'),
+         'quantity', 1, 'expected_price', 12))) ->> 'error') = 'prices'$q$, 'rows')),
+('place_order', 'an option''s own price is checked (cart $35, now $38)',
+  pg_temp.sec_check(null, null,
+    $q$select 1 where (pg_temp.order_with(jsonb_build_array(jsonb_build_object(
+         'product_id', (select id from public.products where name = 'Whey Protein 1kg'),
+         'variant_id', (select v.id from public.product_variants v join public.products p on p.id = v.product_id
+                        where p.name = 'Whey Protein 1kg' and v.label = 'Cookies & Cream'),
+         'quantity', 1, 'expected_price', 35))) ->> 'error') = 'prices'$q$, 'rows')),
+('place_order', 'expected_price that is not a number is refused',
+  pg_temp.sec_check(null, null,
+    $q$select pg_temp.order_with(jsonb_build_array(jsonb_build_object(
+         'product_id', (select id from public.products where name = 'Building Blocks Set'),
+         'variant_id', null, 'quantity', 1, 'expected_price', 'cheap')))$q$, 'error', 'Invalid item in cart'));
 
 -- =====================================================================
 -- G. CONFIGURATION checks (run as admin; each must find 0 problems)

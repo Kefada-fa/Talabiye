@@ -121,6 +121,8 @@ export const en = {
     stockTitle: "Some items are no longer available in the quantity you chose:",
     stockLine: "{name}: you asked for {requested}, {available} left",
     stockLineSoldOut: "{name}: sold out",
+    pricesChangedTitle: "Some prices changed since you added them to your cart:",
+    priceLine: "{name}: was {old}, now {new}",
     fixCart: "Update my cart",
     cartFixed: "Your cart was updated. Please check it and place your order again.",
     errors: {

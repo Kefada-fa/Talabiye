@@ -73,6 +73,14 @@ FEATURES only, never for product rules.**
   and carts below `min_order_amount` (subtotal, before delivery:
   "Minimum order is $15."). Stock problems come back as
   `{ok:false, stock_problems:[…]}`.
+- **Never charge a price the customer didn't see:** the checkout sends each
+  cart line's `expected_price` (the unit price shown in the cart). If the
+  real price differs (price edited, sale started/ended, option's own price),
+  place_order saves NOTHING and returns `{ok:false, error:'prices',
+  price_changes:[{…, old_price, new_price, list_price}]}` (with stock
+  problems too: error 'stock', both lists). Checkout lists "was $X, now $Y";
+  "Update my cart" writes the new prices into the cart; the customer orders
+  again.
 - **Open/closed:** `shops.accepting_orders` is the OWNER's holiday switch;
   `shops.is_active` stays a PLATFORM decision (suspension) — owners can't
   change `is_active`, `is_listed`, `category_id`, `slug` or `logo_url`.
@@ -327,9 +335,9 @@ Plan (no redesign needed):
 - **Unsaved-changes warning** covers tab close and in-app links, not the
   browser's Back button.
 - **Before going live:** remove or protect the `/health` page.
-- **Cart prices can be stale** (saved when added); the success page and
-  WhatsApp message show the real database totals. Later: refresh cart
-  prices/stock from the server on the cart page.
+- **Cart prices can be stale** on the cart page (saved when added); checkout
+  refuses changed prices (see place_order). Later: refresh cart prices/stock
+  from the server when the cart page opens.
 - **Outbox retries only run after a new checkout** until a cron is added.
 - **DB error messages are English only** (place_order); translate later by
   mapping them to error codes.

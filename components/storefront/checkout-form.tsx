@@ -29,7 +29,7 @@ export function CheckoutForm({
   formToken: string;
 }) {
   const slug = shop.slug;
-  const { items, hydrated, subtotal, applyStockProblems } = useCart(slug);
+  const { items, hydrated, subtotal, applyStockProblems, applyPriceChanges } = useCart(slug);
   const [state, formAction, pending] = useActionState(placeOrderAction, initialState);
 
   // Controlled fields, so nothing is lost if the server returns an error.
@@ -69,9 +69,10 @@ export function CheckoutForm({
   const deliveryFee =
     method === "pickup" ? 0 : freeDelivery ? 0 : area && area.fee !== null ? area.fee : null;
 
-  // Only ids + quantities are sent; the database looks up real prices.
+  // Ids + quantities + the price the customer SEES. The database looks up
+  // the real prices and refuses the order if one of them changed.
   const cartPayload = JSON.stringify(
-    items.map((i) => ({ productId: i.productId, variantId: i.variantId, quantity: i.quantity })),
+    items.map((i) => ({ productId: i.productId, variantId: i.variantId, quantity: i.quantity, unitPrice: i.unitPrice })),
   );
 
   function validate(e: React.FormEvent<HTMLFormElement>) {
@@ -91,6 +92,7 @@ export function CheckoutForm({
   }
 
   const stockProblems = state.stockProblems ?? [];
+  const priceChanges = state.priceChanges ?? [];
   // Closed shop or below the minimum: no "Place order" (the database checks too).
   const blocked = checkoutBlock(shop, subtotal);
 
@@ -247,23 +249,43 @@ export function CheckoutForm({
       <div aria-live="assertive">
         {cartFixed ? (
           <p className="rounded-xl border border-zinc-200 bg-white p-3 text-sm text-zinc-700">{t.checkout.cartFixed}</p>
-        ) : stockProblems.length > 0 ? (
+        ) : stockProblems.length > 0 || priceChanges.length > 0 ? (
           <div className="flex flex-col gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
-            <p className="font-medium">{t.checkout.stockTitle}</p>
-            <ul className="list-disc pl-5">
-              {stockProblems.map((p) => {
-                const label = p.option ? `${p.product} (${p.option})` : p.product;
-                return (
-                  <li key={`${p.productId}:${p.variantId ?? ""}`}>
-                    {p.available > 0
-                      ? fill(t.checkout.stockLine, { name: label, requested: p.requested, available: p.available })
-                      : fill(t.checkout.stockLineSoldOut, { name: label })}
-                  </li>
-                );
-              })}
-            </ul>
+            {stockProblems.length > 0 && (
+              <>
+                <p className="font-medium">{t.checkout.stockTitle}</p>
+                <ul className="list-disc pl-5">
+                  {stockProblems.map((p) => {
+                    const label = p.option ? `${p.product} (${p.option})` : p.product;
+                    return (
+                      <li key={`${p.productId}:${p.variantId ?? ""}`}>
+                        {p.available > 0
+                          ? fill(t.checkout.stockLine, { name: label, requested: p.requested, available: p.available })
+                          : fill(t.checkout.stockLineSoldOut, { name: label })}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </>
+            )}
+            {priceChanges.length > 0 && (
+              <>
+                <p className="font-medium">{t.checkout.pricesChangedTitle}</p>
+                <ul className="list-disc pl-5">
+                  {priceChanges.map((p) => (
+                    <li key={`price:${p.productId}:${p.variantId ?? ""}`}>
+                      {fill(t.checkout.priceLine, {
+                        name: p.option ? `${p.product} (${p.option})` : p.product,
+                        old: formatPrice(p.oldPrice),
+                        new: formatPrice(p.newPrice),
+                      })}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
             <button type="button"
-              onClick={() => { applyStockProblems(stockProblems); setCartFixed(true); }}
+              onClick={() => { applyStockProblems(stockProblems); applyPriceChanges(priceChanges); setCartFixed(true); }}
               className="self-start rounded-full bg-red-700 px-4 py-2 font-semibold text-white">
               {t.checkout.fixCart}
             </button>

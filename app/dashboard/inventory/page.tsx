@@ -25,6 +25,15 @@ async function InventoryLoader() {
   const ctx = await getDashboardContext();
   if (!ctx.current) return null; // the layout shows "No shop yet"
   const data = await getInventory(ctx.current.id, ctx.current.role === "owner");
-  // After a quick-stock change the list stays as it is; reopening the page reloads it.
-  return <InventoryList key={ctx.current.id} data={data} />;
+  // The list keeps its own copy (so quick stock shows at once). The key is a
+  // fingerprint of the items: when the server sends a changed list (new,
+  // edited or deleted item), the list starts over with the fresh data.
+  return <InventoryList key={`${ctx.current.id}:${fingerprint(JSON.stringify(data.items))}`} data={data} />;
+}
+
+/** Short fingerprint of a text (changes when the text changes). */
+function fingerprint(text: string): string {
+  let h = 5381;
+  for (let i = 0; i < text.length; i++) h = ((h * 33) ^ text.charCodeAt(i)) >>> 0;
+  return h.toString(36);
 }

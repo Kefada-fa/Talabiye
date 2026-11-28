@@ -221,5 +221,19 @@ export function useCart(slug: string) {
     [items],
   );
 
-  return { items, hydrated, count, subtotal, add, setQuantity, remove, clear, applyStockProblems };
+  /** Prices that changed (checkout told us): the cart shows the real ones. */
+  const applyPriceChanges = useCallback(
+    (changes: { productId: string; variantId: string | null; newPrice: number; listPrice: number }[]) => {
+      setItems(
+        slug,
+        getItems(slug).map((item) => {
+          const c = changes.find((x) => sameLine(item, x.productId, x.variantId));
+          return c ? { ...item, unitPrice: c.newPrice, listPrice: c.listPrice } : item;
+        }),
+      );
+    },
+    [slug],
+  );
+
+  return { items, hydrated, count, subtotal, add, setQuantity, remove, clear, applyStockProblems, applyPriceChanges };
 }
