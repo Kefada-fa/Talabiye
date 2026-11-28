@@ -13,21 +13,29 @@ import "server-only";
 export const RECEIPT_COOKIE = "order_receipt";
 export const RECEIPT_MAX_AGE_SECONDS = 30 * 60; // 30 minutes
 
-export type ReceiptLine = { name: string; quantity: number; lineTotal: number };
+export type ReceiptLine = {
+  name: string;
+  option: string | null; // "Flavor: Chocolate"
+  quantity: number;
+  lineTotal: number;
+};
 
 export type Receipt = {
-  v: 1;
+  v: 2;
   slug: string;
   shopName: string;
   whatsapp: string | null;
-  orderNumber: number;
+  orderNumber: number; // used in the URL
+  displayNumber: string; // shown to people, e.g. KF-0012
   items: ReceiptLine[];
   moreItems: number; // lines left out to keep the cookie small
   subtotal: number;
   deliveryFee: number;
+  freeDelivery: boolean;
   total: number;
   customerName: string;
-  area: string | null;
+  method: "pickup" | "delivery";
+  place: string | null; // "Beirut, Beirut, Achrafieh"
   paymentMethod: "cod" | "whish";
 };
 
@@ -54,8 +62,8 @@ export function decodeReceipt(value: string | undefined): Receipt | null {
   if (!value) return null;
   try {
     const r = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Receipt;
-    if (r?.v !== 1 || typeof r.slug !== "string" || !Number.isInteger(r.orderNumber)) return null;
-    if (!Array.isArray(r.items)) return null;
+    if (r?.v !== 2 || typeof r.slug !== "string" || !Number.isInteger(r.orderNumber)) return null;
+    if (!Array.isArray(r.items) || typeof r.displayNumber !== "string") return null;
     return r;
   } catch {
     return null;

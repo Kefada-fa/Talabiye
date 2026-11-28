@@ -7,15 +7,22 @@ import type { Receipt } from "./receipt";
 export function buildWhatsappMessage(r: Receipt): string {
   const m = t.order.whatsappMessage;
   const lines = [
-    fill(m.greeting, { shop: r.shopName, number: r.orderNumber }),
+    fill(m.greeting, { shop: r.shopName, number: r.displayNumber }),
     ...r.items.map((i) =>
-      fill(m.line, { qty: i.quantity, name: i.name, total: formatPrice(i.lineTotal) }),
+      fill(m.line, {
+        qty: i.quantity,
+        name: i.option ? `${i.name} (${i.option})` : i.name,
+        total: formatPrice(i.lineTotal),
+      }),
     ),
     ...(r.moreItems > 0 ? [`• … +${r.moreItems}`] : []),
     "",
-    fill(m.total, { total: formatPrice(r.total), fee: formatPrice(r.deliveryFee) }),
+    ...(r.method === "delivery"
+      ? [r.freeDelivery ? m.freeDelivery : fill(m.delivery, { fee: formatPrice(r.deliveryFee) })]
+      : []),
+    fill(m.total, { total: formatPrice(r.total) }),
     fill(m.name, { name: r.customerName }),
-    ...(r.area ? [fill(m.area, { area: r.area })] : []),
+    r.method === "delivery" ? fill(m.deliveryTo, { place: r.place ?? "" }) : m.pickup,
     fill(m.payment, { method: t.paymentMethods[r.paymentMethod] }),
   ];
   return lines.join("\n");

@@ -92,6 +92,85 @@ $$;
 drop table if exists pg_temp.sec_results;
 create temp table sec_results (n serial, who text, test text, result text);
 
+-- ---------------------------------------------------------------------
+-- Small helpers used by the tests (temporary, gone when you close the tab)
+-- ---------------------------------------------------------------------
+-- Places an order through place_order (as whoever runs it). Defaults:
+-- delivery to Beirut / Beirut, policy accepted, phone 70 123 456.
+create or replace function pg_temp.order_with(
+  p_items    jsonb,
+  p_phone    text default '70123456',
+  p_method   text default 'delivery',
+  p_gov      text default 'Beirut',
+  p_district text default 'Beirut',
+  p_policy   boolean default true,
+  p_shop     text default 'kefada-demo',
+  p_street   text default 'Street 1',
+  p_name     text default 'Test'
+) returns jsonb
+language sql
+as $f$
+  select public.place_order(p_shop, p_name, p_phone, p_method, p_gov, p_district,
+    case when p_method = 'delivery' then 'Achrafieh' end, null, p_street, null, null,
+    p_items, p_policy)
+$f$;
+
+-- Places a demo order of one product (and option) in kefada-demo.
+create or replace function pg_temp.demo_order(
+  p_product  text default 'Building Blocks Set',
+  p_qty      integer default 1,
+  p_phone    text default '70123456',
+  p_variant  text default null,
+  p_method   text default 'delivery',
+  p_gov      text default 'Beirut',
+  p_district text default 'Beirut',
+  p_policy   boolean default true,
+  p_street   text default 'Street 1'
+) returns jsonb
+language sql
+as $f$
+  select pg_temp.order_with(
+    jsonb_build_array(jsonb_build_object(
+      'product_id', (select id from public.products where name = p_product),
+      'variant_id', (select v.id from public.product_variants v
+                     join public.products p on p.id = v.product_id
+                     where p.name = p_product and v.label = p_variant),
+      'quantity', p_qty)),
+    p_phone, p_method, p_gov, p_district, p_policy, 'kefada-demo', p_street)
+$f$;
+
+-- The most recently created order (looked up with admin rights).
+create or replace function pg_temp.last_order_id()
+returns uuid
+language sql security definer
+as $f$ select id from public.orders order by created_at desc, order_number desc limit 1 $f$;
+
+-- Makes a test user a member (owner/staff) of the demo shop.
+create or replace function pg_temp.add_member(p_uid uuid, p_role text)
+returns void
+language sql
+as $f$
+  insert into auth.users (id) values (p_uid) on conflict do nothing;
+  insert into public.shop_members (shop_id, user_id, role)
+  select id, p_uid, p_role from public.shops where slug = 'kefada-demo'
+  on conflict (shop_id, user_id) do update set role = excluded.role;
+$f$;
+
+-- Moves the most recent order to "paid" (as admin).
+create or replace function pg_temp.pay_last_order()
+returns void
+language sql
+as $f$
+  update public.orders set status = 'pending' where id = pg_temp.last_order_id() and status = 'unconfirmed';
+  update public.orders set status = 'paid'    where id = pg_temp.last_order_id();
+$f$;
+
+-- The secret review token of the most recent order.
+create or replace function pg_temp.review_token()
+returns text
+language sql security definer
+as $f$ select token from public.order_review_tokens where order_id = pg_temp.last_order_id() $f$;
+
 -- Ids used below:
 --   00000000-0000-4000-8000-000000000001  logged-in user, member of NO shop
 --   00000000-0000-4000-8000-000000000002  temporary user, member of the demo shop
@@ -138,8 +217,8 @@ insert into sec_results (who, test, result) values
   pg_temp.sec_check('anon', null, $q$insert into public.customers (shop_id, name, phone)
      select id, 'x', '70123456' from public.shops limit 1$q$, 'denied')),
 ('anon', 'insert order item directly',
-  pg_temp.sec_check('anon', null, $q$insert into public.order_items (shop_id, order_id, name_snapshot, price_snapshot, quantity)
-     select id, gen_random_uuid(), 'x', 0, 1 from public.shops limit 1$q$, 'denied')),
+  pg_temp.sec_check('anon', null, $q$insert into public.order_items (shop_id, order_id, name, unit_price, list_price, quantity)
+     select id, gen_random_uuid(), 'x', 0, 0, 1 from public.shops limit 1$q$, 'denied')),
 ('anon', 'insert product',
   pg_temp.sec_check('anon', null, $q$insert into public.products (shop_id, name, price)
      select id, 'x', 1 from public.shops limit 1$q$, 'denied')),
@@ -163,16 +242,13 @@ insert into sec_results (who, test, result) values
 insert into sec_results (who, test, result) values
 ('non-member', 'read customers',
   pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001', 'select * from public.customers', 'empty',
-    p_setup => $q$select public.place_order('kefada-demo', 'Test', '70123456', 'Beirut', 'Street 1',
-      jsonb_build_array(jsonb_build_object('product_id', (select id from public.products where name = 'Building Blocks Set'), 'quantity', 1)))$q$)),
+    p_setup => $q$select pg_temp.demo_order()$q$)),
 ('non-member', 'read orders (and confirm_token)',
   pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001', 'select confirm_token from public.orders', 'empty',
-    p_setup => $q$select public.place_order('kefada-demo', 'Test', '70123456', 'Beirut', 'Street 1',
-      jsonb_build_array(jsonb_build_object('product_id', (select id from public.products where name = 'Building Blocks Set'), 'quantity', 1)))$q$)),
+    p_setup => $q$select pg_temp.demo_order()$q$)),
 ('non-member', 'read order_items',
   pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001', 'select * from public.order_items', 'empty',
-    p_setup => $q$select public.place_order('kefada-demo', 'Test', '70123456', 'Beirut', 'Street 1',
-      jsonb_build_array(jsonb_build_object('product_id', (select id from public.products where name = 'Building Blocks Set'), 'quantity', 1)))$q$)),
+    p_setup => $q$select pg_temp.demo_order()$q$)),
 ('non-member', 'read shop_members',
   pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001', 'select * from public.shop_members', 'empty')),
 ('non-member', 'read delivery_outcomes',
@@ -202,15 +278,14 @@ insert into sec_results (who, test, result) values
 ('non-member', 'change stock',
   pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001', 'update public.product_variants set stock = 999', 'empty')),
 ('non-member', 'change shop settings',
-  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001', 'update public.shops set delivery_fee = 0', 'empty')),
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001', 'update public.shops set delivery_fixed = 0', 'empty')),
 ('non-member', 'change shop plan',
   pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001', $q$update public.shops set plan = 'pro'$q$, 'denied')),
 ('non-member', 'delete products',
   pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001', 'delete from public.products', 'empty')),
-('non-member', 'mark orders delivered',
-  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001', $q$update public.orders set status = 'delivered'$q$, 'empty',
-    p_setup => $q$select public.place_order('kefada-demo', 'Test', '70123456', 'Beirut', 'Street 1',
-      jsonb_build_array(jsonb_build_object('product_id', (select id from public.products where name = 'Building Blocks Set'), 'quantity', 1)))$q$)),
+('non-member', 'change an order status directly',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001', $q$update public.orders set status = 'pending'$q$, 'denied',
+    p_setup => $q$select pg_temp.demo_order()$q$)),
 ('non-member', 'delete orders',
   pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001', 'delete from public.orders', 'denied')),
 ('non-member', 'change order_number',
@@ -233,100 +308,199 @@ insert into sec_results (who, test, result) values
       update public.shops set is_active = false where slug = 'kefada-demo'$q$));
 
 -- =====================================================================
--- F. place_order rules (as anon)
+-- F. place_order — SERVER ONLY, plus all its rules (run as the server)
 -- =====================================================================
 insert into sec_results (who, test, result) values
-('anon', 'place_order: valid order works (control)',
-  pg_temp.sec_check('anon', null, $q$select public.place_order('kefada-demo', 'Test', '70123456', 'Beirut', 'Street 1',
-     jsonb_build_array(jsonb_build_object('product_id', (select id from public.products where name = 'Building Blocks Set'), 'quantity', 1)))$q$, 'rows')),
-('anon', 'place_order: reply does NOT include confirm_token',
-  pg_temp.sec_check('anon', null, $q$select 1 where not (public.place_order('kefada-demo', 'Test', '70123456', 'Beirut', 'Street 1',
-     jsonb_build_array(jsonb_build_object('product_id', (select id from public.products where name = 'Building Blocks Set'), 'quantity', 1))) ? 'confirm_token')$q$, 'rows')),
-('anon', 'place_order: unknown shop',
-  pg_temp.sec_check('anon', null, $q$select public.place_order('no-such-shop', 'Test', '70123456', 'Beirut', 'Street 1',
-     jsonb_build_array(jsonb_build_object('product_id', gen_random_uuid(), 'quantity', 1)))$q$, 'error', 'Shop not found')),
-('anon', 'place_order: inactive shop',
-  pg_temp.sec_check('anon', null, $q$select public.place_order('kefada-demo', 'Test', '70123456', 'Beirut', 'Street 1',
-     jsonb_build_array(jsonb_build_object('product_id', gen_random_uuid(), 'quantity', 1)))$q$, 'error', 'Shop not found',
+('anon', 'call place_order directly (must go through our checkout)',
+  pg_temp.sec_check('anon', null, 'select pg_temp.demo_order()', 'denied')),
+('owner', 'logged-in users cannot call place_order directly',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002', 'select pg_temp.demo_order()', 'denied',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('server', 'valid order works (control)',
+  pg_temp.sec_check('service_role', null,
+    $q$select 1 from (select pg_temp.demo_order() r) x
+       where (r ->> 'ok')::boolean and r ->> 'display_number' like 'KF-%' and not (r ? 'confirm_token')$q$, 'rows')),
+('server', 'new website order: unconfirmed + history "Order placed"',
+  pg_temp.sec_check('service_role', null,
+    $q$select 1 from public.orders o join public.order_history h on h.order_id = o.id
+       where o.id = pg_temp.last_order_id() and o.status = 'unconfirmed' and o.source = 'website'
+         and h.text = 'Order placed on the website' and h.actor_label = 'Customer'$q$, 'rows',
+    p_setup => $q$select pg_temp.demo_order()$q$)),
+('server', 'unknown shop',
+  pg_temp.sec_check('service_role', null,
+    $q$select pg_temp.order_with('[]'::jsonb, p_shop => 'no-such-shop')$q$, 'error', 'Shop not found')),
+('server', 'inactive shop',
+  pg_temp.sec_check('service_role', null, 'select pg_temp.demo_order()', 'error', 'Shop not found',
     p_setup => $q$update public.shops set is_active = false where slug = 'kefada-demo'$q$)),
--- (the product id is looked up as admin first: a visitor can't see an
---  inactive product, but could have saved its id while it was active)
-('anon', 'place_order: inactive product (using its saved id)',
-  pg_temp.sec_check('anon', null, format($q$select public.place_order('kefada-demo', 'Test', '70123456', 'Beirut', 'Street 1',
-     jsonb_build_array(jsonb_build_object('product_id', %L, 'quantity', 1)))$q$,
-     (select id from public.products where name = 'Building Blocks Set')),
-    'error', 'no longer available',
+('server', 'inactive product (using its saved id)',
+  pg_temp.sec_check('service_role', null, 'select pg_temp.demo_order()', 'error', 'no longer available',
     p_setup => $q$update public.products set is_active = false where name = 'Building Blocks Set'$q$)),
-('anon', 'place_order: product from ANOTHER shop',
-  pg_temp.sec_check('anon', null, $q$select public.place_order('kefada-demo', 'Test', '70123456', 'Beirut', 'Street 1',
-     jsonb_build_array(jsonb_build_object('product_id', (select id from public.products where name = 'SecTest Product'), 'quantity', 1)))$q$,
-    'error', 'no longer available',
+('server', 'product from ANOTHER shop',
+  pg_temp.sec_check('service_role', null, $q$select pg_temp.demo_order('SecTest Product')$q$, 'error', 'no longer available',
     p_setup => $q$insert into public.shops (name, slug) values ('Security Test Shop', 'sec-test-shop');
       insert into public.products (shop_id, name, price) select id, 'SecTest Product', 5 from public.shops where slug = 'sec-test-shop'$q$)),
-('anon', 'place_order: option from ANOTHER shop',
-  pg_temp.sec_check('anon', null, $q$select public.place_order('kefada-demo', 'Test', '70123456', 'Beirut', 'Street 1',
-     jsonb_build_array(jsonb_build_object(
+('server', 'option from ANOTHER shop',
+  pg_temp.sec_check('service_role', null,
+    $q$select pg_temp.order_with(jsonb_build_array(jsonb_build_object(
        'product_id', (select id from public.products where name = 'Cotton T-Shirt'),
-       'variant_id', (select id from public.product_variants where label = 'SecTest Red'),
-       'quantity', 1)))$q$,
+       'variant_id', (select id from public.product_variants where label = 'SecTest Red'), 'quantity', 1)))$q$,
     'error', 'option in your cart is no longer available',
     p_setup => $q$insert into public.shops (name, slug) values ('Security Test Shop', 'sec-test-shop');
-      insert into public.products (shop_id, name, price, option_label) select id, 'SecTest Product', 5, 'Color' from public.shops where slug = 'sec-test-shop';
+      insert into public.products (shop_id, name, price) select id, 'SecTest Product', 5 from public.shops where slug = 'sec-test-shop';
       insert into public.product_variants (shop_id, product_id, label, stock) select shop_id, id, 'SecTest Red', 5 from public.products where name = 'SecTest Product'$q$)),
-('anon', 'place_order: quantity 0',
-  pg_temp.sec_check('anon', null, $q$select public.place_order('kefada-demo', 'Test', '70123456', 'Beirut', 'Street 1',
-     jsonb_build_array(jsonb_build_object('product_id', (select id from public.products where name = 'Building Blocks Set'), 'quantity', 0)))$q$,
+('server', 'product with options but none chosen (uses the option''s own names)',
+  pg_temp.sec_check('service_role', null, $q$select pg_temp.demo_order('Kids Hoodie')$q$, 'error', 'Please choose Color and Size for Kids Hoodie')),
+('server', 'quantity 0',
+  pg_temp.sec_check('service_role', null, $q$select pg_temp.demo_order(p_qty => 0)$q$, 'error', 'from 1 to 20')),
+('server', 'quantity -1',
+  pg_temp.sec_check('service_role', null, $q$select pg_temp.demo_order(p_qty => -1)$q$, 'error', 'from 1 to 20')),
+('server', 'quantity 21',
+  pg_temp.sec_check('service_role', null, $q$select pg_temp.demo_order(p_qty => 21)$q$, 'error', 'from 1 to 20')),
+('server', 'quantity 1.5',
+  pg_temp.sec_check('service_role', null,
+    $q$select pg_temp.order_with(jsonb_build_array(jsonb_build_object('product_id', (select id from public.products where name = 'Building Blocks Set'), 'quantity', 1.5)))$q$,
     'error', 'from 1 to 20')),
-('anon', 'place_order: quantity -1',
-  pg_temp.sec_check('anon', null, $q$select public.place_order('kefada-demo', 'Test', '70123456', 'Beirut', 'Street 1',
-     jsonb_build_array(jsonb_build_object('product_id', (select id from public.products where name = 'Building Blocks Set'), 'quantity', -1)))$q$,
+('server', 'quantity as text "2"',
+  pg_temp.sec_check('service_role', null,
+    $q$select pg_temp.order_with(jsonb_build_array(jsonb_build_object('product_id', (select id from public.products where name = 'Building Blocks Set'), 'quantity', '2')))$q$,
     'error', 'from 1 to 20')),
-('anon', 'place_order: quantity 21',
-  pg_temp.sec_check('anon', null, $q$select public.place_order('kefada-demo', 'Test', '70123456', 'Beirut', 'Street 1',
-     jsonb_build_array(jsonb_build_object('product_id', (select id from public.products where name = 'Building Blocks Set'), 'quantity', 21)))$q$,
-    'error', 'from 1 to 20')),
-('anon', 'place_order: quantity 1.5',
-  pg_temp.sec_check('anon', null, $q$select public.place_order('kefada-demo', 'Test', '70123456', 'Beirut', 'Street 1',
-     jsonb_build_array(jsonb_build_object('product_id', (select id from public.products where name = 'Building Blocks Set'), 'quantity', 1.5)))$q$,
-    'error', 'from 1 to 20')),
-('anon', 'place_order: quantity as text "2"',
-  pg_temp.sec_check('anon', null, $q$select public.place_order('kefada-demo', 'Test', '70123456', 'Beirut', 'Street 1',
-     jsonb_build_array(jsonb_build_object('product_id', (select id from public.products where name = 'Building Blocks Set'), 'quantity', '2')))$q$,
-    'error', 'from 1 to 20')),
-('anon', 'place_order: hide -5 inside a total (-5 + 10)',
-  pg_temp.sec_check('anon', null, $q$select public.place_order('kefada-demo', 'Test', '70123456', 'Beirut', 'Street 1',
-     jsonb_build_array(
+('server', 'hide -5 inside a total (-5 + 10)',
+  pg_temp.sec_check('service_role', null,
+    $q$select pg_temp.order_with(jsonb_build_array(
        jsonb_build_object('product_id', (select id from public.products where name = 'Building Blocks Set'), 'quantity', -5),
        jsonb_build_object('product_id', (select id from public.products where name = 'Building Blocks Set'), 'quantity', 10)))$q$,
     'error', 'from 1 to 20')),
-('anon', 'place_order: same item twice, 15 + 10 = 25',
-  pg_temp.sec_check('anon', null, $q$select public.place_order('kefada-demo', 'Test', '70123456', 'Beirut', 'Street 1',
-     jsonb_build_array(
+('server', 'same item twice, 15 + 10 = 25',
+  pg_temp.sec_check('service_role', null,
+    $q$select pg_temp.order_with(jsonb_build_array(
        jsonb_build_object('product_id', (select id from public.products where name = 'Whey Protein 1kg'),
                           'variant_id', (select id from public.product_variants where label = 'Chocolate'), 'quantity', 15),
        jsonb_build_object('product_id', (select id from public.products where name = 'Whey Protein 1kg'),
                           'variant_id', (select id from public.product_variants where label = 'Chocolate'), 'quantity', 10)))$q$,
-    'error', 'at most 20')),
-('anon', 'place_order: 31 cart entries',
-  pg_temp.sec_check('anon', null, $q$select public.place_order('kefada-demo', 'Test', '70123456', 'Beirut', 'Street 1',
-     (select jsonb_agg(jsonb_build_object('product_id', (select id from public.products where name = 'Building Blocks Set'), 'quantity', 1))
-      from generate_series(1, 31)))$q$,
-    'error', 'Too many items')),
-('anon', 'place_order: more than stock (oversell)',
-  pg_temp.sec_check('anon', null, $q$select public.place_order('kefada-demo', 'Test', '70123456', 'Beirut', 'Street 1',
-     jsonb_build_array(jsonb_build_object('product_id', (select id from public.products where name = 'Building Blocks Set'), 'quantity', 5)))$q$,
-    'error', 'Only 4 left',
-    p_setup => $q$update public.products set stock = 4 where name = 'Building Blocks Set'$q$)),
-('anon', 'place_order: price sent by browser is ignored',
-  pg_temp.sec_check('anon', null, $q$select 1 where (public.place_order('kefada-demo', 'Test', '70123456', 'Beirut', 'Street 1',
-     jsonb_build_array(jsonb_build_object('product_id', (select id from public.products where name = 'Building Blocks Set'),
-                                          'quantity', 1, 'price', 0))) ->> 'subtotal')::numeric = 25$q$, 'rows')),
-('anon', 'place_order: cannot rename an existing customer',
-  pg_temp.sec_check(null, null, $q$select 1 from public.customers where phone = '+96170999888' and name = 'Original Name'$q$, 'rows',
-    p_setup => $q$select public.place_order('kefada-demo', 'Original Name', '70999888', 'Beirut', 'Street 1',
-       jsonb_build_array(jsonb_build_object('product_id', (select id from public.products where name = 'Building Blocks Set'), 'quantity', 1)));
-     select public.place_order('kefada-demo', 'Someone Else', '70 999 888', 'Beirut', 'Street 2',
-       jsonb_build_array(jsonb_build_object('product_id', (select id from public.products where name = 'Building Blocks Set'), 'quantity', 1)))$q$));
+    'error', 'at most 20 of each item')),
+('server', 'more than 20 pieces in total (5 + 8 + 10)',
+  pg_temp.sec_check('service_role', null,
+    $q$select pg_temp.order_with(jsonb_build_array(
+       jsonb_build_object('product_id', (select id from public.products where name = 'Cotton T-Shirt'),
+                          'variant_id', (select id from public.product_variants where label = '2Y'), 'quantity', 5),
+       jsonb_build_object('product_id', (select id from public.products where name = 'Cotton T-Shirt'),
+                          'variant_id', (select id from public.product_variants where label = '4Y'), 'quantity', 8),
+       jsonb_build_object('product_id', (select id from public.products where name = 'Whey Protein 1kg'),
+                          'variant_id', (select id from public.product_variants where label = 'Chocolate'), 'quantity', 10)))$q$,
+    'error', 'at most 20 pieces')),
+('server', '31 cart entries',
+  pg_temp.sec_check('service_role', null,
+    $q$select pg_temp.order_with((select jsonb_agg(jsonb_build_object('product_id', (select id from public.products where name = 'Building Blocks Set'), 'quantity', 1))
+       from generate_series(1, 31)))$q$, 'error', 'Too many items')),
+('server', 'landline phone refused',
+  pg_temp.sec_check('service_role', null, $q$select pg_temp.demo_order(p_phone => '01 123 456')$q$, 'error', 'valid Lebanese mobile')),
+-- stock problems
+('server', 'not enough stock → list with how many are left (no options)',
+  pg_temp.sec_check('service_role', null,
+    $q$select 1 from (select pg_temp.demo_order('Building Blocks Set', 5) r) x
+       where r ->> 'ok' = 'false' and r -> 'stock_problems' -> 0 ->> 'available' = '4'
+         and r -> 'stock_problems' -> 0 ->> 'requested' = '5'$q$, 'rows')),
+('server', 'not enough stock → message uses the option''s own name',
+  pg_temp.sec_check('service_role', null,
+    $q$select 1 from (select pg_temp.demo_order('Whey Protein 1kg', 4, p_variant => 'Vanilla') r) x
+       where r ->> 'ok' = 'false' and r -> 'stock_problems' -> 0 ->> 'option' = 'Flavor: Vanilla'
+         and r ->> 'message' like '%Not enough stock for Whey Protein 1kg (Flavor: Vanilla): only 3 left%'$q$, 'rows')),
+('server', 'sold-out combination of 2 options → listed as sold out',
+  pg_temp.sec_check('service_role', null,
+    $q$select 1 from (select pg_temp.demo_order('Kids Hoodie', 1, p_variant => 'Red / M') r) x
+       where r ->> 'ok' = 'false' and r -> 'stock_problems' -> 0 ->> 'option' = 'Color: Red / Size: M'
+         and r ->> 'message' like '%sold out%'$q$, 'rows')),
+('server', 'stock problem saves NOTHING',
+  pg_temp.sec_check('service_role', null,
+    $q$select pg_temp.demo_order('Building Blocks Set', 5); select 1 from public.orders$q$, 'empty')),
+('server', 'stock is held when the order is placed (2 options)',
+  pg_temp.sec_check('service_role', null,
+    $q$select pg_temp.demo_order('Kids Hoodie', 2, p_variant => 'Navy / S');
+       select 1 from public.product_variants where label = 'Navy / S' and stock = 2$q$, 'rows')),
+-- prices
+('server', 'sale price used; list price kept',
+  pg_temp.sec_check('service_role', null,
+    $q$select 1 from (select pg_temp.demo_order('Cotton T-Shirt', 2, p_variant => '2Y') r) x
+       where (r -> 'items' -> 0 ->> 'unit_price')::numeric = 10 and (r -> 'items' -> 0 ->> 'list_price')::numeric = 12
+         and (r ->> 'subtotal')::numeric = 20$q$, 'rows')),
+('server', 'option''s own price wins over the sale price',
+  pg_temp.sec_check('service_role', null,
+    $q$select 1 from (select pg_temp.demo_order('Whey Protein 1kg', 1, p_variant => 'Cookies & Cream') r) x
+       where (r -> 'items' -> 0 ->> 'unit_price')::numeric = 38$q$, 'rows',
+    p_setup => $q$update public.products set sale_price = 30 where name = 'Whey Protein 1kg'$q$)),
+('server', 'line keeps code, option label and cost',
+  pg_temp.sec_check('service_role', null,
+    $q$select 1 from public.order_items where order_id = pg_temp.last_order_id()
+       and code = 'WP-2001' and option_label = 'Flavor: Chocolate' and cost = 20$q$, 'rows',
+    p_setup => $q$select pg_temp.demo_order('Whey Protein 1kg', 1, p_variant => 'Chocolate')$q$)),
+-- delivery fee (decided by the database)
+('server', 'delivery to Beirut costs $3',
+  pg_temp.sec_check('service_role', null,
+    $q$select 1 from (select pg_temp.demo_order() r) x where (r ->> 'delivery_fee')::numeric = 3 and (r ->> 'total')::numeric = 28$q$, 'rows')),
+('server', 'delivery to Mount Lebanon / Matn costs $4',
+  pg_temp.sec_check('service_role', null,
+    $q$select 1 from (select pg_temp.demo_order(p_gov => 'Mount Lebanon', p_district => 'Matn') r) x where (r ->> 'delivery_fee')::numeric = 4$q$, 'rows')),
+('server', 'delivery to North / Tripoli costs $5',
+  pg_temp.sec_check('service_role', null,
+    $q$select 1 from (select pg_temp.demo_order(p_gov => 'North', p_district => 'Tripoli') r) x where (r ->> 'delivery_fee')::numeric = 5$q$, 'rows')),
+('server', 'no delivery to Akkar',
+  pg_temp.sec_check('service_role', null,
+    $q$select pg_temp.demo_order(p_gov => 'Akkar', p_district => 'Akkar')$q$, 'error', 'does not deliver to Akkar')),
+('server', 'free delivery at $60 or more',
+  pg_temp.sec_check('service_role', null,
+    $q$select 1 from (select pg_temp.demo_order('Whey Protein 1kg', 2, p_variant => 'Chocolate') r) x
+       where (r ->> 'delivery_fee')::numeric = 0 and (r ->> 'free_delivery')::boolean and (r ->> 'total')::numeric = 70$q$, 'rows')),
+('server', 'pickup: no fee, no address needed',
+  pg_temp.sec_check('service_role', null,
+    $q$select 1 from (select pg_temp.demo_order(p_method => 'pickup', p_gov => null, p_district => null) r) x
+       where (r ->> 'delivery_fee')::numeric = 0 and (r ->> 'total')::numeric = 25$q$, 'rows')),
+('server', 'fixed delivery fee mode uses the shop''s fixed fee',
+  pg_temp.sec_check('service_role', null,
+    $q$select 1 from (select pg_temp.demo_order(p_gov => 'Akkar', p_district => 'Akkar') r) x where (r ->> 'delivery_fee')::numeric = 7$q$, 'rows',
+    p_setup => $q$update public.shops set delivery_mode = 'fixed', delivery_fixed = 7 where slug = 'kefada-demo'$q$)),
+('server', 'delivery turned off → must choose pickup',
+  pg_temp.sec_check('service_role', null, 'select pg_temp.demo_order()', 'error', 'does not deliver at the moment',
+    p_setup => $q$update public.shops set delivery_on = false where slug = 'kefada-demo'$q$)),
+('server', 'district must belong to the governorate',
+  pg_temp.sec_check('service_role', null,
+    $q$select pg_temp.demo_order(p_gov => 'Beirut', p_district => 'Tripoli')$q$, 'error', 'Please choose a district in Beirut')),
+('server', 'delivery needs a street',
+  pg_temp.sec_check('service_role', null,
+    $q$select pg_temp.demo_order(p_street => '  ')$q$, 'error', 'Please enter your street')),
+-- policy
+('server', 'policy on: must be accepted',
+  pg_temp.sec_check('service_role', null, $q$select pg_temp.demo_order(p_policy => false)$q$, 'error', 'accept the shop''s policy')),
+('server', 'policy OFF: no agreement needed (control)',
+  pg_temp.sec_check('service_role', null,
+    $q$select 1 from (select pg_temp.demo_order(p_policy => false) r) x where (r ->> 'ok')::boolean$q$, 'rows',
+    p_setup => $q$update public.shops set policy_on = false where slug = 'kefada-demo'$q$)),
+-- spam limits (per shop)
+('server', 'max 3 unconfirmed orders per phone per shop',
+  pg_temp.sec_check('service_role', null, 'select pg_temp.demo_order()', 'error', 'waiting for confirmation',
+    p_setup => $q$select pg_temp.demo_order(); select pg_temp.demo_order(); select pg_temp.demo_order()$q$)),
+('server', 'max 4 orders per phone per shop in 24 hours',
+  pg_temp.sec_check('service_role', null, $q$select pg_temp.demo_order('Whey Protein 1kg', 1, p_variant => 'Chocolate')$q$, 'error', 'limit of 4 orders in 24 hours',
+    p_setup => $q$select pg_temp.demo_order(); select pg_temp.demo_order();
+      update public.orders set status = 'pending';
+      select pg_temp.demo_order(); select pg_temp.demo_order()$q$)),
+('server', 'the 24h limit is PER SHOP: same phone can order in another shop (control)',
+  pg_temp.sec_check('service_role', null,
+    $q$select 1 from (select pg_temp.demo_order() r) x where (r ->> 'ok')::boolean$q$, 'rows',
+    p_setup => $q$insert into public.shops (name, slug, delivery_fixed) values ('Other Shop', 'other-shop', 2);
+      insert into public.products (shop_id, name, price) select id, 'Mug', 9 from public.shops where slug = 'other-shop';
+      select pg_temp.order_with(jsonb_build_array(jsonb_build_object('product_id', (select id from public.products where name = 'Mug'), 'quantity', 1)), p_shop => 'other-shop') from generate_series(1, 3);
+      update public.orders set status = 'pending' where shop_id = (select id from public.shops where slug = 'other-shop');
+      select pg_temp.order_with(jsonb_build_array(jsonb_build_object('product_id', (select id from public.products where name = 'Mug'), 'quantity', 1)), p_shop => 'other-shop');
+      select 1 where (select count(*) from public.orders where shop_id = (select id from public.shops where slug = 'other-shop')) = 4$q$)),
+('server', 'max 25 website orders per hour per shop',
+  pg_temp.sec_check('service_role', null, $q$select pg_temp.demo_order(p_phone => '81 999 999')$q$, 'error', 'receiving a lot of orders',
+    p_setup => $q$update public.products set stock = null where name = 'Building Blocks Set';
+      select pg_temp.demo_order(p_phone => '70' || lpad(i::text, 6, '0')) from generate_series(1, 25) i$q$)),
+('server', 'existing customer is not renamed by a new order',
+  pg_temp.sec_check(null, null, $q$select 1 from public.customers where phone = '+96170999888' and name = 'Test'$q$, 'rows',
+    p_setup => $q$select pg_temp.demo_order(p_phone => '70999888');
+      select pg_temp.order_with(jsonb_build_array(jsonb_build_object('product_id', (select id from public.products where name = 'Building Blocks Set'), 'quantity', 1)),
+                                p_phone => '70 999 888', p_name => 'Someone Else')$q$));
 
 -- =====================================================================
 -- H. NOTIFICATIONS (settings, push tokens, outbox)
@@ -356,8 +530,7 @@ insert into sec_results (who, test, result) values
 ('non-member', 'read notification_outbox',
   pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001',
     'select * from public.notification_outbox', 'empty',
-    p_setup => $q$select public.place_order('kefada-demo', 'Test', '70123456', 'Beirut', 'Street 1',
-      jsonb_build_array(jsonb_build_object('product_id', (select id from public.products where name = 'Building Blocks Set'), 'quantity', 1)))$q$)),
+    p_setup => $q$select pg_temp.demo_order()$q$)),
 ('non-member', 'read other users'' push tokens',
   pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001',
     'select * from public.device_push_tokens', 'empty',
@@ -402,8 +575,7 @@ insert into sec_results (who, test, result) values
     p_setup => $q$insert into auth.users (id) values ('00000000-0000-4000-8000-000000000002');
       insert into public.shop_members (shop_id, user_id, role)
       select id, '00000000-0000-4000-8000-000000000002', 'owner' from public.shops where slug = 'kefada-demo';
-      select public.place_order('kefada-demo', 'Test', '70123456', 'Beirut', 'Street 1',
-        jsonb_build_array(jsonb_build_object('product_id', (select id from public.products where name = 'Building Blocks Set'), 'quantity', 1)))$q$)),
+      select pg_temp.demo_order()$q$)),
 ('owner', 'owner cannot mark outbox rows as sent',
   pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
     $q$update public.notification_outbox set status = 'sent'$q$, 'denied',
@@ -440,8 +612,7 @@ insert into sec_results (who, test, result) values
        where o.channel = 'email' and o.status = 'pending' and o.recipient = 'trigger-test@example.com'$q$, 'rows',
     p_setup => $q$update public.shop_notification_settings set order_emails = array['trigger-test@example.com'], email_enabled = true
         where shop_id = (select id from public.shops where slug = 'kefada-demo');
-      select public.place_order('kefada-demo', 'Test', '70123456', 'Beirut', 'Street 1',
-        jsonb_build_array(jsonb_build_object('product_id', (select id from public.products where name = 'Building Blocks Set'), 'quantity', 1)))$q$)),
+      select pg_temp.demo_order()$q$)),
 ('database', 'email turned off → no email queued',
   pg_temp.sec_check(null, null,
     $q$select 1 from public.notification_outbox o
@@ -449,21 +620,441 @@ insert into sec_results (who, test, result) values
     p_setup => $q$update public.shop_notification_settings set order_emails = array['trigger-test@example.com'], email_enabled = false
         where shop_id = (select id from public.shops where slug = 'kefada-demo');
       delete from public.notification_outbox where shop_id = (select id from public.shops where slug = 'kefada-demo');
-      select public.place_order('kefada-demo', 'Test', '70123456', 'Beirut', 'Street 1',
-        jsonb_build_array(jsonb_build_object('product_id', (select id from public.products where name = 'Building Blocks Set'), 'quantity', 1)))$q$)),
+      select pg_temp.demo_order()$q$)),
 ('server', 'server CAN claim queued notifications (control)',
   pg_temp.sec_check('service_role', null,
     $q$select 1 from public.claim_notifications(10) c where c.status = 'sending' and c.attempts = 1$q$, 'rows',
     p_setup => $q$update public.shop_notification_settings set order_emails = array['claim-test@example.com'], email_enabled = true
         where shop_id = (select id from public.shops where slug = 'kefada-demo');
-      select public.place_order('kefada-demo', 'Test', '70123456', 'Beirut', 'Street 1',
-        jsonb_build_array(jsonb_build_object('product_id', (select id from public.products where name = 'Building Blocks Set'), 'quantity', 1)))$q$)),
-('anon', 'place_order receipt has items but no confirm_token',
+      select pg_temp.demo_order()$q$)),
+('server', 'place_order receipt has items but no confirm_token',
+  pg_temp.sec_check('service_role', null,
+    $q$select 1 from (select pg_temp.demo_order('Building Blocks Set', 2) r) x
+       where jsonb_array_length(r -> 'items') = 1 and not (r ? 'confirm_token')
+         and (r -> 'items' -> 0 ->> 'line_total')::numeric = 50$q$, 'rows'));
+
+-- =====================================================================
+-- I. CATALOG, SETTINGS, COSTS, MONEY (Step 6, migration 1)
+-- =====================================================================
+insert into sec_results (who, test, result) values
+-- anon: private things
+('anon', 'read product_costs',
+  pg_temp.sec_check('anon', null, 'select * from public.product_costs', 'denied')),
+('anon', 'read shop_private_settings',
+  pg_temp.sec_check('anon', null, 'select * from public.shop_private_settings', 'denied')),
+('anon', 'read money_entries',
+  pg_temp.sec_check('anon', null, 'select * from public.money_entries', 'denied')),
+('anon', 'add a money entry',
+  pg_temp.sec_check('anon', null, $q$insert into public.money_entries (shop_id, kind, name, amount)
+     select id, 'expense', 'x', 1 from public.shops limit 1$q$, 'denied')),
+-- anon: public things
+('anon', 'CAN read Lebanon districts (control)',
+  pg_temp.sec_check('anon', null, 'select * from public.lebanon_districts', 'rows')),
+('anon', 'CAN read delivery fees of an active shop (control)',
+  pg_temp.sec_check('anon', null, 'select * from public.shop_delivery_fees', 'rows',
+    p_setup => $q$insert into public.shop_delivery_fees (shop_id, governorate, fee)
+      select id, 'Beirut', 3 from public.shops where slug = 'kefada-demo'
+      on conflict (shop_id, governorate) do update set fee = excluded.fee$q$)),
+('anon', 'see delivery fees of an INACTIVE shop',
+  pg_temp.sec_check('anon', null, 'select * from public.shop_delivery_fees', 'empty',
+    p_setup => $q$insert into public.shop_delivery_fees (shop_id, governorate, fee)
+      select id, 'Beirut', 3 from public.shops where slug = 'kefada-demo'
+      on conflict (shop_id, governorate) do update set fee = excluded.fee;
+      update public.shops set is_active = false where slug = 'kefada-demo'$q$)),
+('anon', 'CAN see photos of a visible product (control)',
+  pg_temp.sec_check('anon', null, 'select * from public.product_photos', 'rows',
+    p_setup => $q$insert into public.product_photos (shop_id, product_id, storage_path)
+      select shop_id, id, 'demo/photo.jpg' from public.products where name = 'Building Blocks Set'$q$)),
+('anon', 'see photos of a HIDDEN product',
+  pg_temp.sec_check('anon', null, 'select * from public.product_photos', 'empty',
+    p_setup => $q$insert into public.product_photos (shop_id, product_id, storage_path)
+      select shop_id, id, 'demo/photo.jpg' from public.products where name = 'Building Blocks Set';
+      update public.products set is_active = false where name = 'Building Blocks Set'$q$)),
+('anon', 'see option types of a HIDDEN product',
+  pg_temp.sec_check('anon', null, format('select * from public.product_option_types where product_id = %L',
+      (select id from public.products where name = 'Whey Protein 1kg')), 'empty',
+    p_setup => $q$insert into public.product_option_types (shop_id, product_id, position, name)
+      select shop_id, id, 1, 'Flavor' from public.products where name = 'Whey Protein 1kg'
+      on conflict (product_id, position) do nothing;
+      update public.products set is_active = false where name = 'Whey Protein 1kg'$q$)),
+('anon', 'change shop delivery settings',
+  pg_temp.sec_check('anon', null, 'update public.shops set delivery_on = false', 'denied')),
+-- logged-in non-member
+('non-member', 'read product costs',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001', 'select * from public.product_costs', 'empty',
+    p_setup => $q$insert into public.product_costs (shop_id, product_id, wholesale_price)
+      select shop_id, id, 10 from public.products where name = 'Building Blocks Set'
+      on conflict (product_id) do update set wholesale_price = excluded.wholesale_price$q$)),
+('non-member', 'read private settings',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001', 'select * from public.shop_private_settings', 'empty')),
+('non-member', 'read money entries',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001', 'select * from public.money_entries', 'empty',
+    p_setup => $q$insert into public.money_entries (shop_id, kind, name, amount)
+      select id, 'expense', 'Rent', 100 from public.shops where slug = 'kefada-demo'$q$)),
+('non-member', 'add a money entry to the demo shop',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001', $q$insert into public.money_entries (shop_id, kind, name, amount)
+     select id, 'money_withdrawn', 'x', 1 from public.shops where slug = 'kefada-demo'$q$, 'denied')),
+('non-member', 'set a product cost in the demo shop',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001', $q$insert into public.product_costs (shop_id, product_id, wholesale_price)
+     select shop_id, id, 1 from public.products where name = 'Building Blocks Set'$q$, 'denied')),
+('non-member', 'change delivery fees',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001', 'update public.shop_delivery_fees set fee = 0', 'empty',
+    p_setup => $q$insert into public.shop_delivery_fees (shop_id, governorate, fee)
+      select id, 'Beirut', 3 from public.shops where slug = 'kefada-demo'
+      on conflict (shop_id, governorate) do update set fee = excluded.fee$q$)),
+('non-member', 'change shop policy / delivery settings',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001', $q$update public.shops set policy_on = false, delivery_on = false$q$, 'empty')),
+('non-member', 'change the invoice prefix',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001', $q$update public.shop_private_settings set invoice_prefix = 'HACK'$q$, 'empty')),
+-- staff / owner
+('staff', 'staff CAN read product costs (control)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003', 'select * from public.product_costs', 'rows',
+    p_setup => $q$insert into auth.users (id) values ('00000000-0000-4000-8000-000000000003');
+      insert into public.shop_members (shop_id, user_id, role)
+      select id, '00000000-0000-4000-8000-000000000003', 'staff' from public.shops where slug = 'kefada-demo'$q$)),
+('staff', 'staff cannot change the invoice prefix',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003', $q$update public.shop_private_settings set invoice_prefix = 'ST'$q$, 'empty',
+    p_setup => $q$insert into auth.users (id) values ('00000000-0000-4000-8000-000000000003');
+      insert into public.shop_members (shop_id, user_id, role)
+      select id, '00000000-0000-4000-8000-000000000003', 'staff' from public.shops where slug = 'kefada-demo'$q$)),
+('owner', 'owner CAN change the invoice prefix (control)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002', $q$update public.shop_private_settings set invoice_prefix = 'KF' returning id$q$, 'rows',
+    p_setup => $q$insert into auth.users (id) values ('00000000-0000-4000-8000-000000000002');
+      insert into public.shop_members (shop_id, user_id, role)
+      select id, '00000000-0000-4000-8000-000000000002', 'owner' from public.shops where slug = 'kefada-demo'$q$)),
+('owner', 'invalid invoice prefix refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002', $q$update public.shop_private_settings set invoice_prefix = 'kf-1'$q$, 'error', 'check constraint',
+    p_setup => $q$insert into auth.users (id) values ('00000000-0000-4000-8000-000000000002');
+      insert into public.shop_members (shop_id, user_id, role)
+      select id, '00000000-0000-4000-8000-000000000002', 'owner' from public.shops where slug = 'kefada-demo'$q$)),
+-- product rules
+('database', 'item code must be unique within a shop',
+  pg_temp.sec_check(null, null, $q$update public.products set code = 'ABC-1' where name in ('Building Blocks Set', 'Cotton T-Shirt')$q$, 'error', 'duplicate key')),
+('database', 'same item code allowed in another shop (control)',
+  pg_temp.sec_check(null, null, $q$select 1 from public.products where code = 'abc-1'$q$, 'rows',
+    p_setup => $q$update public.products set code = 'ABC-1' where name = 'Building Blocks Set';
+      insert into public.shops (name, slug) values ('Code Test Shop', 'code-test-shop');
+      insert into public.products (shop_id, name, price, code) select id, 'Other', 5, 'abc-1' from public.shops where slug = 'code-test-shop'$q$)),
+('database', 'sale price must be lower than the price',
+  pg_temp.sec_check(null, null, $q$update public.products set sale_price = price where name = 'Building Blocks Set'$q$, 'error', 'products_sale_price_check')),
+('database', 'item code with spaces refused',
+  pg_temp.sec_check(null, null, $q$update public.products set code = 'AB 12' where name = 'Building Blocks Set'$q$, 'error', 'check constraint')),
+-- Lebanese mobile numbers
+('phone', 'all valid mobile formats accepted (03/70/71/76/78/79/81)',
+  pg_temp.sec_check(null, null, $q$select 1 where (select bool_and(private.normalize_lb_phone(i) = o) from (values
+      ('03 123 456', '+9613123456'), ('3123456', '+9613123456'), ('+961 3 123 456', '+9613123456'),
+      ('00961 3 123456', '+9613123456'), ('961-3-123456', '+9613123456'), ('+961 03 123 456', '+9613123456'),
+      ('70 123 456', '+96170123456'), ('+96170123456', '+96170123456'), ('0096170123456', '+96170123456'),
+      ('070 123 456', '+96170123456'), ('71-123-456', '+96171123456'), ('76123456', '+96176123456'),
+      ('78 123 456', '+96178123456'), ('961 79 123 456', '+96179123456'), ('81 123 456', '+96181123456')
+    ) as v(i, o))$q$, 'rows')),
+('phone', 'landline 01 123 456 refused',
+  pg_temp.sec_check(null, null, $q$select private.normalize_lb_phone('01 123 456')$q$, 'error', 'valid Lebanese mobile')),
+('phone', 'landline 04 123 456 refused',
+  pg_temp.sec_check(null, null, $q$select private.normalize_lb_phone('04 123 456')$q$, 'error', 'valid Lebanese mobile')),
+('phone', 'landline +961 9 123 456 refused',
+  pg_temp.sec_check(null, null, $q$select private.normalize_lb_phone('+961 9 123 456')$q$, 'error', 'valid Lebanese mobile')),
+('phone', 'unknown mobile prefix 72 refused',
+  pg_temp.sec_check(null, null, $q$select private.normalize_lb_phone('72 123 456')$q$, 'error', 'valid Lebanese mobile')),
+('phone', 'too short (03 123 45) refused',
+  pg_temp.sec_check(null, null, $q$select private.normalize_lb_phone('03 123 45')$q$, 'error', 'valid Lebanese mobile')),
+('phone', 'too long (70 123 4567) refused',
+  pg_temp.sec_check(null, null, $q$select private.normalize_lb_phone('70 123 4567')$q$, 'error', 'valid Lebanese mobile'));
+
+-- =====================================================================
+-- J. INVOICES: statuses, stock, history, costs, reviews (Step 6, migration 2)
+-- Users: …0001 = logged in, no shop · …0002 = OWNER · …0003 = STAFF
+-- =====================================================================
+insert into sec_results (who, test, result) values
+-- status changes through the functions
+('owner', 'owner CAN confirm an unconfirmed order (control)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    'select public.confirm_order(pg_temp.last_order_id())', 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner'); select pg_temp.demo_order()$q$)),
+('staff', 'staff CAN confirm an order (control)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    'select public.confirm_order(pg_temp.last_order_id())', 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff'); select pg_temp.demo_order()$q$)),
+('non-member', 'confirm another shop''s order',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001',
+    'select public.confirm_order(pg_temp.last_order_id())', 'denied',
+    p_setup => $q$select pg_temp.demo_order()$q$)),
+('non-member', 'cancel another shop''s order',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001',
+    $q$select public.cancel_order(pg_temp.last_order_id(), 'x')$q$, 'denied',
+    p_setup => $q$select pg_temp.demo_order()$q$)),
+('anon', 'call confirm_order',
+  pg_temp.sec_check('anon', null, 'select public.confirm_order(pg_temp.last_order_id())', 'denied',
+    p_setup => $q$select pg_temp.demo_order()$q$)),
+('owner', 'owner cannot change status directly (only via functions)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.orders set status = 'pending'$q$, 'denied',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner'); select pg_temp.demo_order()$q$)),
+('owner', 'owner cannot change totals directly',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    'update public.orders set total = 0, subtotal = 0', 'denied',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner'); select pg_temp.demo_order()$q$)),
+('owner', 'owner CAN edit order notes (control)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.orders set notes = 'Call before delivery' returning id$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner'); select pg_temp.demo_order()$q$)),
+('owner', 'owner cannot edit order lines (cost/price) directly',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    'update public.order_items set cost = 0', 'denied',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner'); select pg_temp.demo_order()$q$)),
+-- only valid moves
+('owner', 'confirm an order that is already pending',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    'select public.confirm_order(pg_temp.last_order_id()); select public.confirm_order(pg_temp.last_order_id())', 'error', 'Only unconfirmed',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner'); select pg_temp.demo_order()$q$)),
+('owner', 'mark an unconfirmed order as paid',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    'select public.mark_paid(pg_temp.last_order_id())', 'error', 'Only pending',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner'); select pg_temp.demo_order()$q$)),
+('owner', 'cancel a PAID order',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$select public.cancel_order(pg_temp.last_order_id(), 'Changed mind')$q$, 'error', 'can no longer be cancelled',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner'); select pg_temp.demo_order(); select pg_temp.pay_last_order()$q$)),
+('owner', 'cancel without a reason',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$select public.cancel_order(pg_temp.last_order_id(), '  ')$q$, 'error', 'give a reason',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner'); select pg_temp.demo_order()$q$)),
+('owner', 'confirm a CANCELLED order',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$select public.cancel_order(pg_temp.last_order_id(), 'Out of stock'); select public.confirm_order(pg_temp.last_order_id())$q$, 'error', 'Only unconfirmed',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner'); select pg_temp.demo_order()$q$)),
+('owner', 'refuse an UNCONFIRMED order (must be pending)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    'select public.mark_refused(pg_temp.last_order_id())', 'error', 'Only pending',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner'); select pg_temp.demo_order()$q$)),
+('database', 'guard: cancelled → pending refused even for admin',
+  pg_temp.sec_check(null, null,
+    $q$update public.orders set status = 'pending' where id = pg_temp.last_order_id()$q$, 'error', 'cannot go from cancelled to pending',
+    p_setup => $q$select pg_temp.demo_order(); update public.orders set status = 'cancelled', cancel_reason = 'x' where id = pg_temp.last_order_id()$q$)),
+('database', 'guard: paid → pending refused without edit_order',
+  pg_temp.sec_check(null, null,
+    $q$update public.orders set status = 'pending' where id = pg_temp.last_order_id()$q$, 'error', 'cannot go from paid to pending',
+    p_setup => $q$select pg_temp.demo_order(); select pg_temp.pay_last_order()$q$)),
+('database', 'guard: paid → pending allowed for future edit_order (control)',
+  pg_temp.sec_check(null, null,
+    $q$select set_config('app.reopen_paid_order', 'on', true);
+       update public.orders set status = 'pending' where id = pg_temp.last_order_id() returning id$q$, 'rows',
+    p_setup => $q$select pg_temp.demo_order(); select pg_temp.pay_last_order()$q$)),
+('database', 'cancelled order needs a reason',
+  pg_temp.sec_check(null, null,
+    $q$update public.orders set status = 'cancelled' where id = pg_temp.last_order_id()$q$, 'error', 'orders_cancel_reason_required',
+    p_setup => $q$select pg_temp.demo_order()$q$)),
+-- manual invoices
+('database', 'manual invoice CAN start as pending (control)',
+  pg_temp.sec_check(null, null,
+    $q$insert into public.orders (shop_id, customer_id, source, status)
+       select shop_id, id, 'manual', 'pending' from public.customers limit 1 returning id$q$, 'rows',
+    p_setup => $q$select pg_temp.demo_order()$q$)),
+('database', 'manual invoice cannot start as unconfirmed',
+  pg_temp.sec_check(null, null,
+    $q$insert into public.orders (shop_id, customer_id, source, status)
+       select shop_id, id, 'manual', 'unconfirmed' from public.customers limit 1$q$, 'error', 'must start as pending',
+    p_setup => $q$select pg_temp.demo_order()$q$)),
+('database', 'website order cannot start as pending',
+  pg_temp.sec_check(null, null,
+    $q$insert into public.orders (shop_id, customer_id, source, status)
+       select shop_id, id, 'website', 'pending' from public.customers limit 1$q$, 'error', 'must start as unconfirmed',
+    p_setup => $q$select pg_temp.demo_order()$q$)),
+('database', 'order total must add up',
+  pg_temp.sec_check(null, null,
+    $q$update public.orders set discount = 5 where id = pg_temp.last_order_id(); set constraints all immediate$q$, 'error', 'does not add up',
+    p_setup => $q$select pg_temp.demo_order()$q$)),
+-- stock back on cancel / refuse
+('owner', 'cancel gives stock back (product WITH options)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$select public.cancel_order(pg_temp.last_order_id(), 'Customer changed mind');
+       select 1 from public.product_variants v join public.products p on p.id = v.product_id
+       where p.name = 'Cotton T-Shirt' and v.label = '4Y' and v.stock = 8$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner');
+      select pg_temp.demo_order('Cotton T-Shirt', 2, '70123456', '4Y')$q$)),
+('owner', 'cancel gives stock back (product WITHOUT options)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$select public.cancel_order(pg_temp.last_order_id(), 'Duplicate order');
+       select 1 from public.products where name = 'Building Blocks Set' and stock = 4$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner');
+      select pg_temp.demo_order('Building Blocks Set', 3)$q$)),
+('owner', 'refused gives stock back (product WITH options)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$select public.confirm_order(pg_temp.last_order_id());
+       select public.mark_refused(pg_temp.last_order_id());
+       select 1 from public.product_variants v join public.products p on p.id = v.product_id
+       where p.name = 'Whey Protein 1kg' and v.label = 'Vanilla' and v.stock = 3$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner');
+      select pg_temp.demo_order('Whey Protein 1kg', 2, '70123456', 'Vanilla')$q$)),
+('owner', 'refused gives stock back (product WITHOUT options)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$select public.confirm_order(pg_temp.last_order_id());
+       select public.mark_refused(pg_temp.last_order_id());
+       select 1 from public.products where name = 'Building Blocks Set' and stock = 4$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner');
+      select pg_temp.demo_order('Building Blocks Set', 2)$q$)),
+('owner', 'paid order does NOT give stock back',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$select public.confirm_order(pg_temp.last_order_id());
+       select public.mark_paid(pg_temp.last_order_id());
+       select 1 from public.products where name = 'Building Blocks Set' and stock = 2$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner');
+      select pg_temp.demo_order('Building Blocks Set', 2)$q$)),
+-- history, outcomes, numbers, email status
+('owner', 'history: placed + confirmed + cancelled (with reason)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$select public.confirm_order(pg_temp.last_order_id());
+       select public.cancel_order(pg_temp.last_order_id(), 'Customer unreachable');
+       select 1 from (select string_agg(text, ' | ' order by at, text) h from public.order_history
+                      where order_id = pg_temp.last_order_id()) x
+       where h like '%Order placed%' and h like '%Order confirmed%' and h like '%Cancelled: Customer unreachable%'$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner'); select pg_temp.demo_order()$q$)),
+('non-member', 'read order history',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001', 'select * from public.order_history', 'empty',
+    p_setup => $q$select pg_temp.demo_order()$q$)),
+('anon', 'read order history',
+  pg_temp.sec_check('anon', null, 'select * from public.order_history', 'denied')),
+('owner', 'paid → delivered outcome counted',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$select public.confirm_order(pg_temp.last_order_id());
+       select public.mark_paid(pg_temp.last_order_id());
+       select 1 from public.get_phone_risk('70123456') where delivered = 1 and refused = 0$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner'); select pg_temp.demo_order()$q$)),
+('owner', 'refused → refused outcome counted',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$select public.confirm_order(pg_temp.last_order_id());
+       select public.mark_refused(pg_temp.last_order_id());
+       select 1 from public.get_phone_risk('70123456') where delivered = 0 and refused = 1$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner'); select pg_temp.demo_order()$q$)),
+('database', 'order gets a display number like ABC-0001',
+  pg_temp.sec_check(null, null,
+    $q$select 1 from public.orders where id = pg_temp.last_order_id() and display_number ~ '^[A-Z0-9]{1,6}-[0-9]{4,}$'$q$, 'rows',
+    p_setup => $q$select pg_temp.demo_order()$q$)),
+('database', 'new order email status = pending',
+  pg_temp.sec_check(null, null,
+    $q$select 1 from public.orders where id = pg_temp.last_order_id() and email_status = 'pending'$q$, 'rows',
+    p_setup => $q$update public.shop_notification_settings set order_emails = array['shop@example.com'], email_enabled = true
+        where shop_id = (select id from public.shops where slug = 'kefada-demo');
+      select pg_temp.demo_order()$q$)),
+-- costs on order lines
+('database', 'line copies the product cost when created',
+  pg_temp.sec_check(null, null,
+    $q$select 1 from public.order_items where order_id = pg_temp.last_order_id() and cost = 10$q$, 'rows',
+    p_setup => $q$insert into public.product_costs (shop_id, product_id, wholesale_price)
+        select shop_id, id, 10 from public.products where name = 'Building Blocks Set'
+        on conflict (product_id) do update set wholesale_price = excluded.wholesale_price;
+      select pg_temp.demo_order()$q$)),
+('database', 'missing cost is filled the first time a cost is added',
+  pg_temp.sec_check(null, null,
+    $q$insert into public.product_costs (shop_id, product_id, wholesale_price)
+         select shop_id, id, 12 from public.products where name = 'Kids Hoodie';
+       select 1 from public.order_items where order_id = pg_temp.last_order_id() and cost = 12$q$, 'rows',
+    p_setup => $q$select pg_temp.demo_order('Kids Hoodie', 1, p_variant => 'Navy / S');
+      select 1 where exists (select 1 from public.order_items where order_id = pg_temp.last_order_id() and cost is null)$q$)),
+('database', 'line cost stays locked when the cost changes later',
+  pg_temp.sec_check(null, null,
+    $q$update public.product_costs set wholesale_price = 15
+        where product_id = (select id from public.products where name = 'Kids Hoodie');
+       select 1 from public.order_items where order_id = pg_temp.last_order_id() and cost = 12$q$, 'rows',
+    p_setup => $q$insert into public.product_costs (shop_id, product_id, wholesale_price)
+        select shop_id, id, 12 from public.products where name = 'Kids Hoodie';
+      select pg_temp.demo_order('Kids Hoodie', 1, p_variant => 'Navy / S')$q$)),
+-- review tokens (server-only)
+('anon', 'read review tokens',
+  pg_temp.sec_check('anon', null, 'select * from public.order_review_tokens', 'denied')),
+('owner', 'even the owner cannot read review tokens',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002', 'select * from public.order_review_tokens', 'denied',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('database', 'paid order gets a review token',
+  pg_temp.sec_check(null, null, 'select 1 where pg_temp.review_token() is not null', 'rows',
+    p_setup => $q$select pg_temp.demo_order(); select pg_temp.pay_last_order()$q$)),
+-- reviews
+('server', 'buyer of a PAID order CAN review (control)',
+  pg_temp.sec_check('service_role', null,
+    $q$select public.submit_review(pg_temp.review_token(), (select id from public.products where name = 'Building Blocks Set'), 5, 'Rania', 'Great!')$q$, 'rows',
+    p_setup => $q$update public.shops set reviews_on = true where slug = 'kefada-demo';
+      select pg_temp.demo_order(); select pg_temp.pay_last_order()$q$)),
+('server', 'review for a product NOT in the order (non-buyer)',
+  pg_temp.sec_check('service_role', null,
+    $q$select public.submit_review(pg_temp.review_token(), (select id from public.products where name = 'Cotton T-Shirt'), 5, 'Rania', 'x')$q$, 'error', 'not part of your order',
+    p_setup => $q$update public.shops set reviews_on = true where slug = 'kefada-demo';
+      select pg_temp.demo_order(); select pg_temp.pay_last_order()$q$)),
+('server', 'review with a fake token',
+  pg_temp.sec_check('service_role', null,
+    $q$select public.submit_review('not-a-real-token', (select id from public.products where name = 'Building Blocks Set'), 5, 'Rania', 'x')$q$, 'error', 'not valid',
+    p_setup => $q$update public.shops set reviews_on = true where slug = 'kefada-demo'$q$)),
+('server', 'review for an order that is no longer paid',
+  pg_temp.sec_check('service_role', null,
+    $q$select public.submit_review(pg_temp.review_token(), (select id from public.products where name = 'Building Blocks Set'), 5, 'Rania', 'x')$q$, 'error', 'only be left for paid orders',
+    p_setup => $q$update public.shops set reviews_on = true where slug = 'kefada-demo';
+      select pg_temp.demo_order(); select pg_temp.pay_last_order();
+      select set_config('app.reopen_paid_order', 'on', true);
+      update public.orders set status = 'pending' where id = pg_temp.last_order_id()$q$)),
+('server', 'unpaid order has no review token (cannot review)',
+  pg_temp.sec_check(null, null, 'select 1 where pg_temp.review_token() is null', 'rows',
+    p_setup => $q$select pg_temp.demo_order()$q$)),
+('server', 'second review of the same product in the same order',
+  pg_temp.sec_check('service_role', null,
+    $q$select public.submit_review(pg_temp.review_token(), (select id from public.products where name = 'Building Blocks Set'), 4, 'Rania', 'again')$q$, 'error', 'already reviewed',
+    p_setup => $q$update public.shops set reviews_on = true where slug = 'kefada-demo';
+      select pg_temp.demo_order(); select pg_temp.pay_last_order();
+      select public.submit_review(pg_temp.review_token(), (select id from public.products where name = 'Building Blocks Set'), 5, 'Rania', 'first')$q$)),
+('server', 'reviews turned off → refused',
+  pg_temp.sec_check('service_role', null,
+    $q$select public.submit_review(pg_temp.review_token(), (select id from public.products where name = 'Building Blocks Set'), 5, 'Rania', 'x')$q$, 'error', 'not accepting reviews',
+    p_setup => $q$select pg_temp.demo_order(); select pg_temp.pay_last_order()$q$)),
+('anon', 'call submit_review directly',
   pg_temp.sec_check('anon', null,
-    $q$select 1 from (select public.place_order('kefada-demo', 'Test', '70123456', 'Beirut', 'Street 1',
-       jsonb_build_array(jsonb_build_object('product_id', (select id from public.products where name = 'Building Blocks Set'), 'quantity', 2)))) as r(x)
-       where jsonb_array_length(x -> 'items') = 1 and not (x ? 'confirm_token')
-         and (x -> 'items' -> 0 ->> 'line_total')::numeric = 50$q$, 'rows'));
+    $q$select public.submit_review('x', gen_random_uuid(), 5, 'x', 'x')$q$, 'denied')),
+('owner', 'logged-in users cannot call submit_review directly',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$select public.submit_review('x', gen_random_uuid(), 5, 'x', 'x')$q$, 'denied',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('anon', 'PENDING review is not public',
+  pg_temp.sec_check('anon', null, 'select * from public.product_reviews_public', 'empty',
+    p_setup => $q$update public.shops set reviews_on = true, reviews_need_approval = true where slug = 'kefada-demo';
+      select pg_temp.demo_order(); select pg_temp.pay_last_order();
+      select public.submit_review(pg_temp.review_token(), (select id from public.products where name = 'Building Blocks Set'), 5, 'Rania', 'x')$q$)),
+('anon', 'APPROVED review is public (control)',
+  pg_temp.sec_check('anon', null, 'select * from public.product_reviews_public', 'rows',
+    p_setup => $q$update public.shops set reviews_on = true, reviews_need_approval = false where slug = 'kefada-demo';
+      select pg_temp.demo_order(); select pg_temp.pay_last_order();
+      select public.submit_review(pg_temp.review_token(), (select id from public.products where name = 'Building Blocks Set'), 5, 'Rania', 'x')$q$)),
+('anon', 'HIDDEN review is not public',
+  pg_temp.sec_check('anon', null, 'select * from public.product_reviews_public', 'empty',
+    p_setup => $q$update public.shops set reviews_on = true, reviews_need_approval = false where slug = 'kefada-demo';
+      select pg_temp.demo_order(); select pg_temp.pay_last_order();
+      select public.submit_review(pg_temp.review_token(), (select id from public.products where name = 'Building Blocks Set'), 5, 'Rania', 'x');
+      update public.product_reviews set status = 'hidden'$q$)),
+('anon', 'approved review hidden when the shop turns reviews off',
+  pg_temp.sec_check('anon', null, 'select * from public.product_reviews_public', 'empty',
+    p_setup => $q$update public.shops set reviews_on = true, reviews_need_approval = false where slug = 'kefada-demo';
+      select pg_temp.demo_order(); select pg_temp.pay_last_order();
+      select public.submit_review(pg_temp.review_token(), (select id from public.products where name = 'Building Blocks Set'), 5, 'Rania', 'x');
+      update public.shops set reviews_on = false where slug = 'kefada-demo'$q$)),
+('anon', 'review order_id is never public',
+  pg_temp.sec_check('anon', null, 'select order_id from public.product_reviews_public', 'error', 'does not exist')),
+('anon', 'read the reviews table directly',
+  pg_temp.sec_check('anon', null, 'select * from public.product_reviews', 'denied')),
+('non-member', 'read another shop''s reviews (incl. pending)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001', 'select * from public.product_reviews', 'empty',
+    p_setup => $q$update public.shops set reviews_on = true where slug = 'kefada-demo';
+      select pg_temp.demo_order(); select pg_temp.pay_last_order();
+      select public.submit_review(pg_temp.review_token(), (select id from public.products where name = 'Building Blocks Set'), 5, 'Rania', 'x')$q$)),
+('owner', 'owner CAN approve a review (control)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.product_reviews set status = 'approved' returning id$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner');
+      update public.shops set reviews_on = true where slug = 'kefada-demo';
+      select pg_temp.demo_order(); select pg_temp.pay_last_order();
+      select public.submit_review(pg_temp.review_token(), (select id from public.products where name = 'Building Blocks Set'), 5, 'Rania', 'x')$q$)),
+('owner', 'nobody can edit a review''s rating or text',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.product_reviews set rating = 1, text = 'changed'$q$, 'denied',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner');
+      update public.shops set reviews_on = true where slug = 'kefada-demo';
+      select pg_temp.demo_order(); select pg_temp.pay_last_order();
+      select public.submit_review(pg_temp.review_token(), (select id from public.products where name = 'Building Blocks Set'), 5, 'Rania', 'x')$q$));
 
 -- =====================================================================
 -- G. CONFIGURATION checks (run as admin; each must find 0 problems)
@@ -479,17 +1070,18 @@ insert into sec_results (who, test, result) values
 -- (trigger / event-trigger functions are skipped: they can't be called
 --  directly, only by the database itself — e.g. Supabase's own
 --  rls_auto_enable() behind the "auto-enable RLS" setting)
-('config', 'anon can run NO public function except place_order',
+('config', 'anon can run NO public function at all',
   pg_temp.sec_check(null, null, $q$select p.proname from pg_proc p
      where p.pronamespace = 'public'::regnamespace
        and p.prorettype not in ('trigger'::regtype, 'event_trigger'::regtype)
-       and has_function_privilege('anon', p.oid, 'EXECUTE') and p.proname <> 'place_order'$q$, 'empty')),
-('config', 'logged-in users can run no public function except place_order/get_phone_risk',
+       and has_function_privilege('anon', p.oid, 'EXECUTE')$q$, 'empty')),
+('config', 'logged-in users can run only the allowed public functions',
   pg_temp.sec_check(null, null, $q$select p.proname from pg_proc p
      where p.pronamespace = 'public'::regnamespace
        and p.prorettype not in ('trigger'::regtype, 'event_trigger'::regtype)
        and has_function_privilege('authenticated', p.oid, 'EXECUTE')
-       and p.proname not in ('place_order', 'get_phone_risk')$q$, 'empty')),
+       and p.proname not in ('get_phone_risk',
+                             'confirm_order', 'mark_paid', 'cancel_order', 'mark_refused')$q$, 'empty')),
 ('config', 'anon can run NO private function',
   pg_temp.sec_check(null, null, $q$select p.proname from pg_proc p
      where p.pronamespace = 'private'::regnamespace and has_function_privilege('anon', p.oid, 'EXECUTE')$q$, 'empty')),
@@ -497,13 +1089,24 @@ insert into sec_results (who, test, result) values
   pg_temp.sec_check(null, null, $q$select table_name, privilege_type from information_schema.role_table_grants
      where grantee = 'anon' and table_schema = 'public'
        and not (privilege_type = 'SELECT'
-                and table_name in ('shop_categories', 'shops', 'products', 'product_variants'))$q$, 'empty')),
+                and table_name in ('shop_categories', 'shops', 'products', 'product_variants',
+                                   'lebanon_governorates', 'lebanon_districts', 'shop_delivery_fees',
+                                   'product_option_types', 'product_option_values', 'product_photos',
+                                   'product_reviews_public'))$q$, 'empty')),
+('config', 'costs, private settings and money are never granted to anon',
+  pg_temp.sec_check(null, null, $q$select t from unnest(array['public.product_costs', 'public.shop_private_settings',
+       'public.money_entries', 'public.order_history']) t
+     where to_regclass(t) is not null and has_table_privilege('anon', t, 'SELECT, INSERT, UPDATE, DELETE')$q$, 'empty')),
 ('config', 'nobody but admin/server can touch delivery_outcomes',
   pg_temp.sec_check(null, null, $q$select r from unnest(array['anon', 'authenticated']) r
      where has_table_privilege(r, 'public.delivery_outcomes', 'SELECT, INSERT, UPDATE, DELETE')$q$, 'empty')),
 ('config', 'only the server can write notification_outbox',
   pg_temp.sec_check(null, null, $q$select r from unnest(array['anon', 'authenticated']) r
      where has_table_privilege(r, 'public.notification_outbox', 'INSERT, UPDATE, DELETE')$q$, 'empty')),
+('config', 'only the server can run place_order',
+  pg_temp.sec_check(null, null, $q$select r from unnest(array['anon', 'authenticated']) r
+     where exists (select 1 from pg_proc p where p.proname = 'place_order' and p.pronamespace = 'public'::regnamespace
+                   and has_function_privilege(r, p.oid, 'EXECUTE'))$q$, 'empty')),
 ('config', 'only the server can run claim_notifications',
   pg_temp.sec_check(null, null, $q$select r from unnest(array['anon', 'authenticated']) r
      where has_function_privilege(r, 'public.claim_notifications(integer)', 'EXECUTE')$q$, 'empty')),

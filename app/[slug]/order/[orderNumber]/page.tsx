@@ -17,7 +17,7 @@ export const metadata: Metadata = {
 };
 
 /**
- * "Order #12 received" page.
+ * "Order KF-0012 received" page.
  * Shows ONLY the receipt stored in this visitor's own short-lived cookie
  * (set by the checkout). It never looks up orders in the database, so
  * changing the number in the URL reveals nothing.
@@ -59,7 +59,7 @@ async function OrderReceipt({ params }: { params: Props["params"] }) {
         <span className="flex h-14 w-14 items-center justify-center rounded-full bg-brand-primary text-2xl text-brand-on-primary" aria-hidden>
           ✓
         </span>
-        <h1 className="text-2xl font-semibold">{fill(t.order.title, { number: receipt.orderNumber })}</h1>
+        <h1 className="text-2xl font-semibold">{fill(t.order.title, { number: receipt.displayNumber })}</h1>
         <p className="text-zinc-600">{fill(t.order.thanks, { name: receipt.customerName })}</p>
       </div>
 
@@ -92,13 +92,24 @@ async function OrderReceipt({ params }: { params: Props["params"] }) {
             <li key={i} className="flex justify-between gap-3">
               <span className="min-w-0">
                 {item.quantity} × {item.name}
+                {item.option && <span className="text-zinc-500"> — {item.option}</span>}
               </span>
               <span className="shrink-0 tabular-nums">{formatPrice(item.lineTotal)}</span>
             </li>
           ))}
           {receipt.moreItems > 0 && <li className="text-zinc-500">+{receipt.moreItems}</li>}
         </ul>
-        <OrderTotals subtotal={receipt.subtotal} deliveryFee={receipt.deliveryFee} />
+        <OrderTotals
+          subtotal={receipt.subtotal}
+          deliveryFee={receipt.deliveryFee}
+          free={receipt.freeDelivery}
+          hideDelivery={receipt.method === "pickup"}
+        />
+        <p className="text-sm text-zinc-600">
+          {receipt.method === "delivery"
+            ? fill(t.order.deliveryTo, { place: receipt.place ?? "" })
+            : t.order.pickup}
+        </p>
         <p className="text-sm text-zinc-600">
           {fill(t.order.payment, { method: t.paymentMethods[receipt.paymentMethod] })}
         </p>

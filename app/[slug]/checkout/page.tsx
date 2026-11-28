@@ -1,8 +1,10 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
+import { connection } from "next/server";
 import { Suspense } from "react";
 import { t } from "@/lib/i18n";
-import { getShopBySlug } from "@/lib/storefront/data";
+import { createFormToken } from "@/lib/checkout/form-token";
+import { getDeliveryAreas, getShopBySlug } from "@/lib/storefront/data";
 import { CheckoutForm } from "@/components/storefront/checkout-form";
 
 export const metadata: Metadata = { title: t.checkout.title };
@@ -22,5 +24,13 @@ async function CheckoutLoader({ params }: { params: PageProps<"/[slug]/checkout"
   const { slug } = await params;
   const shop = await getShopBySlug(slug);
   if (!shop) notFound();
-  return <CheckoutForm slug={shop.slug} deliveryFee={shop.deliveryFee} />;
+
+  const areas = await getDeliveryAreas(shop);
+
+  // Signed "page shown at" time for the 4-second spam check. Must be
+  // created per visit (never cached), hence connection().
+  await connection();
+  const formToken = createFormToken();
+
+  return <CheckoutForm shop={shop} areas={areas} formToken={formToken ?? ""} />;
 }

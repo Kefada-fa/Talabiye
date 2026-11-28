@@ -5,9 +5,10 @@ import { redirect } from "next/navigation";
 import { after } from "next/server";
 import { t } from "@/lib/i18n";
 import { normalizeLebanesePhone } from "@/lib/phone";
-import { createPublicClient } from "@/lib/supabase/public";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { getShopBySlug, isValidSlug } from "@/lib/storefront/data";
 import { MAX_CART_LINES, MAX_QTY_PER_ITEM } from "@/lib/storefront/types";
+import { checkFormToken } from "@/lib/checkout/form-token";
 import {
   RECEIPT_COOKIE,
   RECEIPT_MAX_AGE_SECONDS,
@@ -17,7 +18,16 @@ import {
 } from "@/lib/checkout/receipt";
 import { processOutbox } from "@/lib/notifications/outbox";
 
-export type CheckoutState = { error: string | null };
+export type StockProblem = {
+  productId: string;
+  variantId: string | null;
+  product: string;
+  option: string | null;
+  requested: number;
+  available: number;
+};
+
+export type CheckoutState = { error: string | null; stockProblems?: StockProblem[] };
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -53,29 +63,49 @@ function text(formData: FormData, key: string): string {
 
 /** Database errors → a message safe to show the customer. */
 function friendlyError(error: { code?: string; message?: string }): string {
-  // place_order raises its own clear messages ("Only 2 left of …") as P0001.
+  // place_order raises its own clear, customer-friendly messages as P0001.
   if (error.code === "P0001" && error.message) return error.message;
-  if (error.code === "22023") return t.checkout.errors.phone; // invalid phone
+  if (error.code === "22023") return t.checkout.errors.phone; // not a Lebanese mobile
   console.error("[checkout] place_order failed:", error);
   return t.checkout.errors.generic;
 }
 
-type PlaceOrderReply = {
-  order_id: string;
-  order_number: number;
-  items: { name: string; quantity: number; unit_price: number; line_total: number }[];
-  subtotal: number;
-  delivery_fee: number;
-  total: number;
-  customer_name: string;
-  delivery_area: string | null;
-  payment_method: "cod" | "whish";
-};
+type PlaceOrderReply =
+  | {
+      ok: false;
+      error: "stock";
+      message: string;
+      stock_problems: {
+        product_id: string;
+        variant_id: string | null;
+        product: string;
+        option: string | null;
+        requested: number;
+        available: number;
+      }[];
+    }
+  | {
+      ok: true;
+      order_id: string;
+      order_number: number;
+      display_number: string;
+      items: { name: string; option_label: string | null; quantity: number; line_total: number }[];
+      subtotal: number;
+      delivery_fee: number;
+      free_delivery: boolean;
+      total: number;
+      customer_name: string;
+      method: "pickup" | "delivery";
+      governorate: string | null;
+      district: string | null;
+      city: string | null;
+      payment_method: "cod" | "whish";
+    };
 
 /**
- * Checkout form → place_order (in the database) → success page.
- * Anyone can call this (it's a public form), so everything is re-checked
- * here and again in the database.
+ * Checkout form → place_order (server-only, in the database) → success page.
+ * Anyone can post to this action, so everything is checked here AND again
+ * in the database.
  */
 export async function placeOrderAction(
   _prev: CheckoutState,
@@ -84,19 +114,41 @@ export async function placeOrderAction(
   const slug = text(formData, "slug");
   if (!isValidSlug(slug)) return { error: t.checkout.errors.generic };
 
-  // Honeypot: real people never see or fill this field; simple bots do.
+  // ---- Spam checks (only possible here, before the database) ----
+  // 1. Honeypot: people never see or fill this field; simple bots do.
   if (text(formData, "website") !== "") return { error: t.checkout.errors.generic };
+  // 2. Signed timestamp: filled in under 4 seconds = refuse.
+  const tokenCheck = checkFormToken(text(formData, "form_token"), Date.now());
+  if (tokenCheck === "too_fast") return { error: t.checkout.errors.tooFast };
+  if (tokenCheck === "expired") return { error: t.checkout.errors.expired };
+  if (tokenCheck !== "ok") return { error: t.checkout.errors.generic };
 
+  // ---- Form fields (checked again in the database) ----
   const name = text(formData, "name");
   const phone = normalizeLebanesePhone(text(formData, "phone"));
-  const area = text(formData, "area");
-  const address = text(formData, "address");
+  const method = text(formData, "method");
+  const governorate = text(formData, "governorate");
+  const district = text(formData, "district");
+  const city = text(formData, "city");
+  const neighbourhood = text(formData, "neighbourhood");
+  const street = text(formData, "street");
+  const details = text(formData, "details");
   const notes = text(formData, "notes");
+  const policyAccepted = formData.get("policy") === "on";
 
   if (!name) return { error: t.checkout.errors.name };
   if (!phone) return { error: t.checkout.errors.phone };
-  if (!address) return { error: t.checkout.errors.address };
-  if (name.length > 100 || area.length > 100 || address.length > 500 || notes.length > 2000) {
+  if (method !== "pickup" && method !== "delivery") return { error: t.checkout.errors.method };
+  if (method === "delivery") {
+    if (!governorate) return { error: t.checkout.errors.governorate };
+    if (!district) return { error: t.checkout.errors.district };
+    if (!city) return { error: t.checkout.errors.city };
+    if (!street) return { error: t.checkout.errors.street };
+  }
+  if (
+    name.length > 100 || city.length > 100 || neighbourhood.length > 100 ||
+    street.length > 200 || details.length > 500 || notes.length > 2000
+  ) {
     return { error: t.checkout.errors.tooLong };
   }
 
@@ -105,38 +157,74 @@ export async function placeOrderAction(
 
   const shop = await getShopBySlug(slug);
   if (!shop) return { error: t.checkout.errors.generic };
+  if (shop.policyOn && !policyAccepted) return { error: t.checkout.errors.policy };
 
-  const supabase = createPublicClient();
-  const { data, error } = await supabase.rpc("place_order", {
+  // place_order is SERVER-ONLY: it needs the admin (secret) key.
+  const admin = createAdminClient();
+  if (!admin) {
+    console.error("[checkout] SUPABASE_SECRET_KEY is not set — cannot place orders.");
+    return { error: t.checkout.errors.notConfigured };
+  }
+
+  const isDelivery = method === "delivery";
+  const { data, error } = await admin.rpc("place_order", {
     p_shop_slug: slug,
     p_customer_name: name,
     p_customer_phone: phone,
-    p_customer_area: area,
-    p_customer_address: address,
-    p_items: items,
+    p_method: method,
+    p_governorate: isDelivery ? governorate : null,
+    p_district: isDelivery ? district : null,
+    p_city: isDelivery ? city : null,
+    p_neighbourhood: isDelivery ? neighbourhood || null : null,
+    p_street: isDelivery ? street : null,
+    p_details: isDelivery ? details || null : null,
     p_notes: notes || null,
-    p_payment_method: "cod", // only cash on delivery for now
+    p_items: items,
+    p_policy_accepted: policyAccepted,
   });
   if (error) return { error: friendlyError(error) };
 
   const reply = data as PlaceOrderReply;
+
+  // Not enough stock: nothing was saved. Send the list back so the
+  // customer can fix the cart with one tap.
+  if (!reply.ok) {
+    return {
+      error: reply.message,
+      stockProblems: reply.stock_problems.map((p) => ({
+        productId: p.product_id,
+        variantId: p.variant_id,
+        product: p.product,
+        option: p.option,
+        requested: p.requested,
+        available: p.available,
+      })),
+    };
+  }
+
   const receipt: Receipt = {
-    v: 1,
+    v: 2,
     slug: shop.slug,
     shopName: shop.name,
     whatsapp: shop.whatsappNumber,
     orderNumber: reply.order_number,
+    displayNumber: reply.display_number,
     items: reply.items.map((i) => ({
       name: i.name,
+      option: i.option_label,
       quantity: i.quantity,
       lineTotal: Number(i.line_total),
     })),
     moreItems: 0,
     subtotal: Number(reply.subtotal),
     deliveryFee: Number(reply.delivery_fee),
+    freeDelivery: Boolean(reply.free_delivery),
     total: Number(reply.total),
     customerName: reply.customer_name,
-    area: reply.delivery_area,
+    method: reply.method,
+    place: reply.method === "delivery"
+      ? [reply.city, reply.district, reply.governorate].filter(Boolean).join(", ")
+      : null,
     paymentMethod: reply.payment_method,
   };
 

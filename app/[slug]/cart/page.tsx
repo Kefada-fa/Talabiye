@@ -23,5 +23,5 @@ async function CartLoader({ params }: { params: PageProps<"/[slug]/cart">["param
   const { slug } = await params;
   const shop = await getShopBySlug(slug);
   if (!shop) notFound();
-  return <CartView slug={shop.slug} deliveryFee={shop.deliveryFee} />;
+  return <CartView slug={shop.slug} />;
 }

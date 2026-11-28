@@ -19,9 +19,9 @@ export type CartItem = {
   productId: string;
   variantId: string | null;
   name: string;
-  optionLabel: string | null; // e.g. "Size"
-  variantLabel: string | null; // e.g. "4Y"
-  unitPrice: number;
+  optionText: string | null; // e.g. "Flavor: Chocolate" or "Color: Red / Size: M"
+  unitPrice: number; // what the customer pays (sale / option price)
+  listPrice: number; // price before any sale
   quantity: number;
   maxQuantity: number; // 1–20, lower if stock was low when added
   imageUrl: string | null;
@@ -74,14 +74,24 @@ function parse(raw: string | null): CartItem[] {
   try {
     const data: unknown = JSON.parse(raw);
     if (!Array.isArray(data)) return EMPTY;
-    return data.filter(isCartItem).slice(0, MAX_CART_LINES).map((i) => ({
-      ...i,
-      optionLabel: i.optionLabel ?? null,
-      variantLabel: i.variantLabel ?? null,
-      imageUrl: i.imageUrl ?? null,
-      maxQuantity: Math.max(1, Math.min(MAX_QTY_PER_ITEM, i.maxQuantity)),
-      quantity: Math.max(1, Math.min(MAX_QTY_PER_ITEM, i.maxQuantity, i.quantity)),
-    }));
+    return data.filter(isCartItem).slice(0, MAX_CART_LINES).map((item) => {
+      // Carts saved by the older version had optionLabel + variantLabel.
+      const old = item as CartItem & { optionLabel?: string | null; variantLabel?: string | null };
+      const optionText =
+        old.optionText ??
+        (old.variantLabel ? (old.optionLabel ? `${old.optionLabel}: ` : "") + old.variantLabel : null);
+      return {
+        productId: item.productId,
+        variantId: item.variantId,
+        name: item.name,
+        optionText,
+        unitPrice: item.unitPrice,
+        listPrice: typeof item.listPrice === "number" ? item.listPrice : item.unitPrice,
+        imageUrl: item.imageUrl ?? null,
+        maxQuantity: Math.max(1, Math.min(MAX_QTY_PER_ITEM, item.maxQuantity)),
+        quantity: Math.max(1, Math.min(MAX_QTY_PER_ITEM, item.maxQuantity, item.quantity)),
+      };
+    });
   } catch {
     return EMPTY;
   }
@@ -182,6 +192,27 @@ export function useCart(slug: string) {
 
   const clear = useCallback(() => setItems(slug, []), [slug]);
 
+  /**
+   * Fixes the cart after the shop reported stock problems: lowers each
+   * line to what is left, or removes it when it's sold out.
+   */
+  const applyStockProblems = useCallback(
+    (problems: { productId: string; variantId: string | null; available: number }[]) => {
+      const next: CartItem[] = [];
+      for (const item of getItems(slug)) {
+        const p = problems.find((x) => sameLine(item, x.productId, x.variantId));
+        if (!p) {
+          next.push(item);
+        } else if (p.available > 0) {
+          const max = Math.min(item.maxQuantity, p.available);
+          next.push({ ...item, maxQuantity: max, quantity: Math.min(item.quantity, max) });
+        }
+      }
+      setItems(slug, next);
+    },
+    [slug],
+  );
+
   const { count, subtotal } = useMemo(
     () => ({
       count: items.reduce((n, i) => n + i.quantity, 0),
@@ -190,5 +221,5 @@ export function useCart(slug: string) {
     [items],
   );
 
-  return { items, hydrated, count, subtotal, add, setQuantity, remove, clear };
+  return { items, hydrated, count, subtotal, add, setQuantity, remove, clear, applyStockProblems };
 }

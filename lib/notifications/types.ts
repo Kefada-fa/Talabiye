@@ -18,16 +18,18 @@ export type OutboxRow = {
 export type OrderDetails = {
   orderId: string;
   orderNumber: number;
+  displayNumber: string; // e.g. KF-0012
   shopName: string;
   shopSlug: string;
   customerName: string;
   customerPhone: string;
-  area: string | null;
-  address: string;
+  method: "pickup" | "delivery";
+  address: string | null; // "Street, Neighbourhood, City, District, Governorate — details"
   notes: string | null;
   paymentMethod: "cod" | "whish";
-  items: { name: string; quantity: number; unitPrice: number; lineTotal: number }[];
+  items: { name: string; option: string | null; quantity: number; unitPrice: number; lineTotal: number }[];
   subtotal: number;
+  discount: number;
   deliveryFee: number;
   total: number;
 };

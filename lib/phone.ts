@@ -1,29 +1,23 @@
 /**
- * Lebanese phone numbers → "+961XXXXXXX(X)".
+ * Lebanese MOBILE numbers → "+961XXXXXXX(X)".
  * Same rules as private.normalize_lb_phone() in the database (the database
- * has the final say; this is for instant feedback in the form).
+ * has the final say; this gives instant feedback in the form).
  *
- *   "03 123 456"     → "+9613123456"
- *   "70-123-456"     → "+96170123456"
- *   "+961 70 123456" → "+96170123456"
- *   "00961 3 123456" → "+9613123456"
- *   "+961 03 123456" → "+9613123456"
- *
- * Returns null when the number isn't valid.
+ * Accepted, with or without 961 / +961 / 00961, spaces, dashes or a leading 0:
+ *   - 8 digits starting with 70, 71, 76, 78, 79, 81   e.g. 70 123 456
+ *   - 7 digits starting with 3 (the "03" numbers)      e.g. 03 123 456
+ * Landlines (01, 04, 05…) and anything else → null.
  */
 export function normalizeLebanesePhone(input: string): string | null {
   let d = (input ?? "").replace(/[^0-9]/g, "");
   if (!d) return null;
 
-  if (d.startsWith("00961")) d = d.slice(2);
-  else if (d.startsWith("961") && d.length >= 10) {
-    // already has the country code
-  } else if (d.startsWith("0")) d = "961" + d.slice(1);
-  else d = "961" + d;
+  if (d.startsWith("00961")) d = d.slice(5);
+  else if (d.startsWith("961") && d.length >= 10) d = d.slice(3);
 
-  if (d.startsWith("9610")) d = "961" + d.slice(4);
+  if (d.startsWith("0")) d = d.slice(1);
 
-  return /^961[0-9]{7,8}$/.test(d) ? "+" + d : null;
+  return /^(3[0-9]{6}|(70|71|76|78|79|81)[0-9]{6})$/.test(d) ? "+961" + d : null;
 }
 
 /** "+96170123456" → "96170123456" (the format wa.me links need). */

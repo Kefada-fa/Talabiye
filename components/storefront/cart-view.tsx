@@ -7,8 +7,11 @@ import { t } from "@/lib/i18n";
 import { ProductImage } from "./product-image";
 import { QuantityPicker } from "./quantity-picker";
 
-/** The cart page: items, quantities, subtotal, delivery fee, total. */
-export function CartView({ slug, deliveryFee }: { slug: string; deliveryFee: number }) {
+/**
+ * The cart page: items, quantities and subtotal. The delivery fee depends
+ * on pickup/delivery and the address, so it's calculated at checkout.
+ */
+export function CartView({ slug }: { slug: string }) {
   const { items, hydrated, subtotal, setQuantity, remove } = useCart(slug);
 
   if (!hydrated) {
@@ -39,16 +42,16 @@ export function CartView({ slug, deliveryFee }: { slug: string; deliveryFee: num
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <p className="truncate font-medium text-zinc-900">{item.name}</p>
-                  {item.variantLabel && (
-                    <p className="text-sm text-zinc-500">
-                      {item.optionLabel ? `${item.optionLabel}: ` : ""}
-                      {item.variantLabel}
+                  {item.optionText && <p className="text-sm text-zinc-500">{item.optionText}</p>}
+                </div>
+                <div className="shrink-0 text-right">
+                  <p className="font-medium tabular-nums">{formatPrice(item.unitPrice * item.quantity)}</p>
+                  {item.listPrice > item.unitPrice && (
+                    <p className="text-xs text-zinc-400 line-through tabular-nums">
+                      {formatPrice(item.listPrice * item.quantity)}
                     </p>
                   )}
                 </div>
-                <p className="shrink-0 font-medium tabular-nums">
-                  {formatPrice(item.unitPrice * item.quantity)}
-                </p>
               </div>
               <div className="flex items-center justify-between">
                 <QuantityPicker
@@ -70,7 +73,7 @@ export function CartView({ slug, deliveryFee }: { slug: string; deliveryFee: num
         ))}
       </ul>
 
-      <OrderTotals subtotal={subtotal} deliveryFee={deliveryFee} />
+      <OrderTotals subtotal={subtotal} deliveryFee={null} />
 
       <Link
         href={`/${slug}/checkout`}
@@ -83,20 +86,38 @@ export function CartView({ slug, deliveryFee }: { slug: string; deliveryFee: num
   );
 }
 
-export function OrderTotals({ subtotal, deliveryFee }: { subtotal: number; deliveryFee: number }) {
+/**
+ * Subtotal / delivery / total box.
+ * deliveryFee: a number, 0 with `free` → "Free", or null → "Calculated at checkout".
+ */
+export function OrderTotals({
+  subtotal,
+  deliveryFee,
+  free = false,
+  hideDelivery = false,
+}: {
+  subtotal: number;
+  deliveryFee: number | null;
+  free?: boolean;
+  hideDelivery?: boolean;
+}) {
   return (
     <dl className="flex flex-col gap-2 rounded-2xl border border-zinc-200 bg-white p-4 text-sm">
       <div className="flex justify-between">
         <dt className="text-zinc-600">{t.cart.subtotal}</dt>
         <dd className="tabular-nums">{formatPrice(subtotal)}</dd>
       </div>
-      <div className="flex justify-between">
-        <dt className="text-zinc-600">{t.cart.delivery}</dt>
-        <dd className="tabular-nums">{formatPrice(deliveryFee)}</dd>
-      </div>
+      {!hideDelivery && (
+        <div className="flex justify-between">
+          <dt className="text-zinc-600">{t.cart.delivery}</dt>
+          <dd className="tabular-nums">
+            {deliveryFee === null ? t.cart.deliveryAtCheckout : free ? t.cart.free : formatPrice(deliveryFee)}
+          </dd>
+        </div>
+      )}
       <div className="flex justify-between border-t border-zinc-200 pt-2 text-base font-semibold">
         <dt>{t.cart.total}</dt>
-        <dd className="tabular-nums">{formatPrice(sumMoney([subtotal, deliveryFee]))}</dd>
+        <dd className="tabular-nums">{formatPrice(sumMoney([subtotal, deliveryFee ?? 0]))}</dd>
       </div>
     </dl>
   );

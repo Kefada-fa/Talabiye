@@ -13,7 +13,8 @@ export async function loadOrderDetails(
   const { data: order, error: orderError } = await admin
     .from("orders")
     .select(
-      "id, order_number, shop_id, customer_id, subtotal, delivery_fee, total, " +
+      "id, order_number, display_number, shop_id, customer_id, subtotal, discount, delivery_fee, total, " +
+        "method, governorate, district, city, neighbourhood, street, details, " +
         "delivery_area, delivery_address, notes, payment_method",
     )
     .eq("id", orderId)
@@ -23,13 +24,22 @@ export async function loadOrderDetails(
   const o = order as unknown as {
     id: string;
     order_number: number;
+    display_number: string;
     shop_id: string;
     customer_id: string;
     subtotal: number | string;
+    discount: number | string;
     delivery_fee: number | string;
     total: number | string;
+    method: "pickup" | "delivery";
+    governorate: string | null;
+    district: string | null;
+    city: string | null;
+    neighbourhood: string | null;
+    street: string | null;
+    details: string | null;
     delivery_area: string | null;
-    delivery_address: string;
+    delivery_address: string | null;
     notes: string | null;
     payment_method: "cod" | "whish";
   };
@@ -39,7 +49,7 @@ export async function loadOrderDetails(
     admin.from("customers").select("name, phone").eq("id", o.customer_id).single(),
     admin
       .from("order_items")
-      .select("name_snapshot, price_snapshot, quantity, created_at")
+      .select("name, option_label, unit_price, quantity, created_at")
       .eq("order_id", o.id)
       .order("created_at"),
   ]);
@@ -47,24 +57,36 @@ export async function loadOrderDetails(
   if (customerRes.error) throw new Error(`customer: ${customerRes.error.message}`);
   if (itemsRes.error) throw new Error(`items: ${itemsRes.error.message}`);
 
+  // Address in one line; older orders only had area + address.
+  const place = [o.street, o.neighbourhood, o.city, o.district, o.governorate].filter(Boolean).join(", ");
+  const address =
+    o.method === "pickup"
+      ? null
+      : place
+        ? place + (o.details ? ` — ${o.details}` : "")
+        : [o.delivery_area, o.delivery_address].filter(Boolean).join(", ") || null;
+
   return {
     orderId: o.id,
     orderNumber: o.order_number,
+    displayNumber: o.display_number,
     shopName: shopRes.data.name,
     shopSlug: shopRes.data.slug,
     customerName: customerRes.data.name,
     customerPhone: customerRes.data.phone,
-    area: o.delivery_area,
-    address: o.delivery_address,
+    method: o.method,
+    address,
     notes: o.notes,
     paymentMethod: o.payment_method,
     items: (itemsRes.data ?? []).map((i) => ({
-      name: i.name_snapshot,
+      name: i.name,
+      option: i.option_label,
       quantity: i.quantity,
-      unitPrice: Number(i.price_snapshot),
-      lineTotal: Number(i.price_snapshot) * i.quantity,
+      unitPrice: Number(i.unit_price),
+      lineTotal: Number(i.unit_price) * i.quantity,
     })),
     subtotal: Number(o.subtotal),
+    discount: Number(o.discount),
     deliveryFee: Number(o.delivery_fee),
     total: Number(o.total),
   };
