@@ -6,6 +6,7 @@ import { formatPrice } from "@/lib/format";
 import { fill, t } from "@/lib/i18n";
 import { getDeliveryAreas, getProducts, getShopBySlug } from "@/lib/storefront/data";
 import { isAvailable, isOnSale, priceRange } from "@/lib/storefront/pricing";
+import { closedMessage } from "@/lib/storefront/ordering";
 import type { StoreShop } from "@/lib/storefront/types";
 import { ProductImage } from "@/components/storefront/product-image";
 
@@ -13,7 +14,29 @@ export async function generateMetadata({ params }: PageProps<"/[slug]">): Promis
   const { slug } = await params;
   const shop = await getShopBySlug(slug);
   if (!shop) return { title: t.shop.notFoundTitle };
-  return { title: shop.name, description: shop.description ?? undefined };
+  // Link preview on WhatsApp / Instagram / Facebook (Open Graph).
+  const description = shop.description ?? shop.tagline ?? shop.heroText ?? undefined;
+  const image = shop.shareImageUrl ?? shop.logoUrl;
+  return {
+    title: shop.name,
+    description,
+    openGraph: {
+      type: "website",
+      siteName: shop.name,
+      title: shop.name,
+      description,
+      url: `/${shop.slug}`,
+      images: image
+        ? [shop.shareImageUrl ? { url: image, width: 1200, height: 630, alt: shop.name } : { url: image, alt: shop.name }]
+        : undefined,
+    },
+    twitter: {
+      card: shop.shareImageUrl ? "summary_large_image" : "summary",
+      title: shop.name,
+      description,
+      images: image ? [image] : undefined,
+    },
+  };
 }
 
 /** Shop home: intro + product grid (newest first). */
@@ -51,10 +74,20 @@ async function ShopCatalog({ params }: { params: PageProps<"/[slug]">["params"] 
 
   return (
     <div className="flex flex-col gap-6">
+      {!shop.acceptingOrders && (
+        <div role="status" className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-amber-900">
+          <p className="font-semibold">{t.shop.closedTitle}</p>
+          <p className="text-sm">{closedMessage(shop)}</p>
+        </div>
+      )}
       <section className="flex flex-col gap-1">
+        {shop.tagline && <p className="text-sm font-medium uppercase tracking-wide text-zinc-500">{shop.tagline}</p>}
         {shop.heroText && <p className="text-lg font-medium text-zinc-900">{shop.heroText}</p>}
         {shop.description && <p className="text-zinc-700">{shop.description}</p>}
         {delivery && <p className="text-sm text-zinc-500">{delivery}</p>}
+        {shop.minOrder !== null && (
+          <p className="text-sm text-zinc-500">{fill(t.shop.minOrder, { amount: formatPrice(shop.minOrder) })}</p>
+        )}
       </section>
 
       {products.length === 0 ? (

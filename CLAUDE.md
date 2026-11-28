@@ -67,8 +67,15 @@ FEATURES only, never for product rules.**
   action calls it with the admin client, after its honeypot + 4-second
   checks. It decides prices, delivery fee (fixed or per governorate, free
   above the threshold), stock and spam limits (per shop: 25 website
-  orders/hour, 3 unconfirmed per phone, 4 per phone per 24h; max 20 pieces).
-  Stock problems come back as `{ok:false, stock_problems:[…]}`.
+  orders/hour, 3 unconfirmed per phone, 4 per phone per 24h; max pieces =
+  the shop's own `shops.max_pieces`, 1–50, default 20). It also refuses
+  closed shops (`accepting_orders = false` → the shop's `closed_message`)
+  and carts below `min_order_amount` (subtotal, before delivery:
+  "Minimum order is $15."). Stock problems come back as
+  `{ok:false, stock_problems:[…]}`.
+- **Open/closed:** `shops.accepting_orders` is the OWNER's holiday switch;
+  `shops.is_active` stays a PLATFORM decision (suspension) — owners can't
+  change `is_active`, `is_listed`, `category_id`, `slug` or `logo_url`.
 - `delivery_outcomes` is never granted to `anon`/`authenticated` (use
   `get_phone_risk()`, members of active shops only).
 - **Phones: Lebanese MOBILE numbers only** (03 + 6 digits, or 70/71/76/78/79/81
@@ -131,13 +138,26 @@ FEATURES only, never for product rules.**
   (`shops_delivery_or_pickup`). Checkout shows Pickup only when it's on;
   `place_order` refuses pickup otherwise. Free-delivery amount and
   per-governorate availability are each shop's own choice (back-office
-  settings, Step 11) — the demo's $60 / "no Akkar" are just seed examples.
+  settings) — the demo's $60 / "no Akkar" are just seed examples.
 - Shop public settings (columns on `shops`): delivery_on, pickup_on, delivery_mode,
-  delivery_fixed, free_delivery_*, delivery_note, description_on, policy_on,
-  policy_text, low_stock_at, socials, colors, hero_text, reviews_on.
-  Per-governorate fees: `shop_delivery_fees` (no row / null = no delivery).
+  delivery_fixed, free_delivery_*, delivery_note, pickup_note, description_on,
+  policy_on, policy_text, low_stock_at, instagram, facebook, colors, tagline,
+  hero_text, description (= link-preview text, max 160), logo_path,
+  share_image_path, accepting_orders, closed_message, min_order_amount,
+  max_pieces, reviews_on. Per-governorate fees: `shop_delivery_fees` (no row /
+  null = no delivery). The shop page's `generateMetadata` builds the link
+  preview (Open Graph) from description + share image (or logo).
+- Closed shop: the shop page shows the message on top, cart/checkout are
+  blocked (`lib/storefront/ordering.ts`), and place_order refuses.
 - Product photos: `product_photos.storage_path` → `lib/storefront/photos.ts`
   (Supabase Storage bucket `product-photos`, set up in a later step).
+- Shop pictures: Storage bucket **`shop-assets`** (public read, 300 KB,
+  JPG/PNG/WebP). Files `<shop id>/logo-<uuid>.webp` / `share-<uuid>.webp`;
+  upload/replace/delete ONLY by owners of that shop
+  (`private.can_manage_shop_asset`). The browser resizes first
+  (`lib/settings/image.ts`: logo max 512 px, share image 1200 × 630), uploads
+  with the user's session, then `saveShopImageAction` saves the path and
+  deletes the old file. URLs: `shopAssetUrl()`.
 - The full Kefada-style storefront comes in Step 10; Step 6 kept UI changes
   minimal.
 
@@ -173,6 +193,34 @@ FEATURES only, never for product rules.**
   every 60 s (`getUnconfirmedCountAction`).
 - Phone (< 768px): top bar + bottom tabs (Home, Invoices, Inventory,
   Customers, More). Computer: dark sidebar.
+- **Settings** (Step 8): ONE PAGE PER SECTION — `/dashboard/settings/<slug>`
+  (list in `lib/settings/sections.ts`). Computer: "Settings" in the sidebar
+  opens like a dropdown with the sections in a smaller font. Phone:
+  More → Settings shows the list (`/dashboard/settings`), each section has
+  "← Settings". Each section is a card with its own Save
+  (`components/backoffice/settings/`). OWNERS edit;
+  staff see it read-only (`<fieldset disabled>`) — except "My account"
+  (password change, every member; the current password is re-checked with a
+  separate session-less client). Every save is a server action in
+  `app/dashboard/settings/actions.ts`: it takes the shop from
+  `getDashboardContext()` (never from the browser), refuses non-owners,
+  validates with `lib/settings/validate.ts` (same rules as the form), and
+  saves with the user's session (RLS = owners only, plus table checks).
+  Delivery + pickup + fees save together via `save_delivery_settings()`;
+  option presets via `save_option_presets()`. Unsaved changes warn on
+  leaving (tab close + in-app links).
+- Private settings (members read, owners change): `shop_private_settings`
+  (invoice_prefix 2–5 A–Z/0–9, deposit_on/type/amount/instructions,
+  wa_confirm/deposit/review_template — null = default text in en.ts;
+  placeholders in `lib/settings/templates.ts`), `shop_notification_settings`
+  (max 3 emails, no duplicates).
+- Catalog lists: `shop_catalog_labels` (kind collection/category, public read
+  for active shops) — rename/delete ONLY via `rename_catalog_label()` /
+  `delete_catalog_label()`, which also update `products.collection` /
+  `products.categories` (a guard trigger blocks direct name changes).
+  `shop_option_presets` (members only): favourite option types with ordered
+  values; Step 9 uses them as one-tap presets. "Smart size order":
+  `lib/settings/size-order.ts`.
 - Making someone a shop owner (until shop sign-up exists):
   `supabase/snippets/make_shop_owner.sql` (email typed there, never in code).
   Re-running `seed.sql` removes the demo shop's members → run it again.
@@ -236,8 +284,15 @@ Plan (no redesign needed):
   status guard only allows unconfirmed/pending on insert).
 - **Stock back for deleted options:** if an option is deleted, its order
   lines lose `variant_id`; cancelling such an order can't return that stock.
-- **Photos:** the Supabase Storage bucket `product-photos` and uploads are
-  not set up yet (placeholders are shown).
+- **Photos:** the Supabase Storage bucket `product-photos` and product
+  uploads are not set up yet (placeholders are shown). `shop-assets` (logo,
+  share image) is done.
+- **Shop colors** are saved (Settings) but the storefront still uses the
+  platform colors until Step 10.
+- **Deposits / WhatsApp templates** are settings only; the invoice buttons
+  (Request deposit, Mark deposit paid, send messages) come in Step 11.
+- **Unsaved-changes warning** covers tab close and in-app links, not the
+  browser's Back button.
 - **Before going live:** remove or protect the `/health` page.
 - **Cart prices can be stale** (saved when added); the success page and
   WhatsApp message show the real database totals. Later: refresh cart

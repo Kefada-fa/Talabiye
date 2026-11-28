@@ -21,6 +21,15 @@ export type StoreShop = {
   policyText: string | null;
   lowStockAt: number;
   heroText: string | null;
+  tagline: string | null;
+  pickupNote: string | null;
+  acceptingOrders: boolean; // owner's open/closed switch (holidays)
+  closedMessage: string | null;
+  minOrder: number | null; // subtotal before delivery
+  maxPieces: number;
+  shareImageUrl: string | null; // link preview picture
+  instagram: string | null;
+  facebook: string | null;
 };
 
 export type StoreOptionValue = { id: string; value: string };

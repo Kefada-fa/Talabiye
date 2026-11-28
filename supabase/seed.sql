@@ -139,6 +139,24 @@ begin
 end;
 $$;
 
+-- ---------- Catalog lists + favourite option types (Settings page) ----------
+insert into public.shop_catalog_labels (shop_id, kind, name, position)
+select s.id, x.k, x.n, x.o
+from public.shops s,
+     (values ('collection', 'Summer 2026', 1), ('collection', 'Winter 2026', 2), ('collection', 'Fitness', 3),
+             ('collection', 'Toys', 4),
+             ('category', 'Boys', 1), ('category', 'Girls', 2), ('category', 'Kids', 3), ('category', 'Gifts', 4),
+             ('category', 'Supplements', 5), ('category', 'Sports', 6)) as x(k, n, o)
+where s.slug = 'kefada-demo';
+
+insert into public.shop_option_presets (shop_id, name, "values", position)
+select s.id, x.n, x.v, x.o
+from public.shops s,
+     (values ('Size', array['2Y', '4Y', '6Y', 'S', 'M', 'L'], 1),
+             ('Flavor', array['Chocolate', 'Vanilla', 'Cookies & Cream'], 2),
+             ('Color', array['Red', 'Navy', 'Black', 'White'], 3)) as x(n, v, o)
+where s.slug = 'kefada-demo';
+
 -- ---------- 3. Where new-order emails go ----------
 -- 👉 CHANGE THIS to your own email address (you can list several:
 --    array['you@gmail.com', 'partner@gmail.com']). Then re-run this file.

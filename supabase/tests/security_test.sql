@@ -10,7 +10,7 @@
 -- SAFE TO RUN: every test runs inside its own savepoint and is undone
 -- right after, so no data is changed (even when a test fails).
 --
--- Needs: both migrations + seed.sql (uses the "kefada-demo" shop).
+-- Needs: all migrations + seed.sql (uses the "kefada-demo" shop).
 -- How to run: Supabase → SQL Editor → New query → paste this whole
 -- file → Run. Read the result table at the bottom.
 -- =====================================================================
@@ -184,7 +184,9 @@ begin
   update public.shops
      set is_active = true, delivery_on = true, pickup_on = false, delivery_mode = 'governorate',
          delivery_fixed = 4, free_delivery_on = true, free_delivery_above = 60,
-         policy_on = true, reviews_on = false, reviews_need_approval = true
+         policy_on = true, reviews_on = false, reviews_need_approval = true,
+         accepting_orders = true, closed_message = null, min_order_amount = null, max_pieces = 20,
+         pickup_note = null, logo_path = null, share_image_path = null
    where id = v_shop;
 
   insert into public.shop_delivery_fees (shop_id, governorate, fee)
@@ -193,7 +195,11 @@ begin
   from public.lebanon_governorates g
   on conflict (shop_id, governorate) do update set fee = excluded.fee;
 
-  update public.shop_private_settings set invoice_prefix = 'KF' where shop_id = v_shop;
+  update public.shop_private_settings
+     set invoice_prefix = 'KF', deposit_on = false, deposit_type = 'fixed', deposit_amount = null,
+         deposit_instructions = null, wa_confirm_template = null, wa_deposit_template = null,
+         wa_review_template = null
+   where shop_id = v_shop;
   update public.shop_notification_settings
      set order_emails = array['shop@example.com'], email_enabled = true, push_enabled = false
    where shop_id = v_shop;
@@ -219,6 +225,30 @@ begin
          price_override = case when p.name || ':' || v.label = 'Whey Protein 1kg:Cookies & Cream' then 38 else null end
     from public.products p
    where p.id = v.product_id and p.shop_id = v_shop;
+
+  update public.products p
+     set collection = case p.name when 'Cotton T-Shirt' then 'Summer 2026' when 'Whey Protein 1kg' then 'Fitness'
+                                  when 'Building Blocks Set' then 'Toys' when 'Kids Hoodie' then 'Winter 2026' end,
+         categories = case p.name when 'Cotton T-Shirt' then '{Boys,Girls}' when 'Whey Protein 1kg' then '{Supplements,Sports}'
+                                  when 'Building Blocks Set' then '{Kids,Gifts}' when 'Kids Hoodie' then '{Boys,Girls}'
+                                  else p.categories end::text[]
+   where p.shop_id = v_shop;
+
+  -- Catalog lists + option presets as seed.sql makes them.
+  perform set_config('app.rename_catalog_label', 'on', true);
+  delete from public.shop_catalog_labels where shop_id = v_shop;
+  perform set_config('app.rename_catalog_label', 'off', true);
+  insert into public.shop_catalog_labels (shop_id, kind, name, position)
+  select v_shop, k, n, o from (values
+    ('collection', 'Summer 2026', 1), ('collection', 'Winter 2026', 2), ('collection', 'Fitness', 3),
+    ('collection', 'Toys', 4),
+    ('category', 'Boys', 1), ('category', 'Girls', 2), ('category', 'Kids', 3), ('category', 'Gifts', 4),
+    ('category', 'Supplements', 5), ('category', 'Sports', 6)) as x(k, n, o);
+  delete from public.shop_option_presets where shop_id = v_shop;
+  insert into public.shop_option_presets (shop_id, name, "values", position) values
+    (v_shop, 'Size', array['2Y', '4Y', '6Y', 'S', 'M', 'L'], 1),
+    (v_shop, 'Flavor', array['Chocolate', 'Vanilla', 'Cookies & Cream'], 2),
+    (v_shop, 'Color', array['Red', 'Navy', 'Black', 'White'], 3);
 
   delete from public.product_costs where shop_id = v_shop;
   insert into public.product_costs (shop_id, product_id, wholesale_price)
@@ -271,9 +301,60 @@ returns text
 language sql security definer
 as $f$ select token from public.order_review_tokens where order_id = pg_temp.last_order_id() $f$;
 
+-- Makes user ...0004 the owner of a SECOND shop (to test "other shops").
+create or replace function pg_temp.add_other_shop_owner()
+returns void
+language sql
+as $f$
+  insert into public.shops (name, slug) values ('Other Test Shop', 'other-test-shop') on conflict (slug) do nothing;
+  insert into auth.users (id) values ('00000000-0000-4000-8000-000000000004') on conflict do nothing;
+  insert into public.shop_members (shop_id, user_id, role)
+  select id, '00000000-0000-4000-8000-000000000004', 'owner' from public.shops where slug = 'other-test-shop'
+  on conflict (shop_id, user_id) do update set role = excluded.role;
+$f$;
+
+-- SQL text that calls save_delivery_settings for the demo shop.
+create or replace function pg_temp.delivery_call(
+  p_on text, p_mode text, p_fixed text, p_fees text, p_free_on text, p_free_above text, p_pickup text)
+returns text
+language sql
+as $f$
+  select format($s$select public.save_delivery_settings(
+      (select id from public.shops where slug = 'kefada-demo'),
+      %s, %L, %s, %L::jsonb, %s, %s, 'Delivery in 2 days', %s, 'Hamra, 10am-6pm')$s$,
+    p_on, p_mode, p_fixed, p_fees, p_free_on, p_free_above, p_pickup)
+$f$;
+
+-- SQL text that puts a file in the demo shop's folder of "shop-assets".
+create or replace function pg_temp.asset_insert(p_file text)
+returns text
+language sql
+as $f$
+  select format($s$insert into storage.objects (bucket_id, name) values ('shop-assets', %L)$s$,
+    (select id from public.shops where slug = 'kefada-demo')::text || '/' || p_file)
+$f$;
+
+-- An order of 22 pieces in 3 lines (10 Chocolate + 8 T-Shirt 4Y + 4 Blocks).
+create or replace function pg_temp.order_22_pieces()
+returns jsonb
+language sql
+as $f$
+  select pg_temp.order_with(jsonb_build_array(
+    jsonb_build_object('product_id', (select id from public.products where name = 'Whey Protein 1kg'),
+      'variant_id', (select v.id from public.product_variants v join public.products p on p.id = v.product_id
+                     where p.name = 'Whey Protein 1kg' and v.label = 'Chocolate'), 'quantity', 10),
+    jsonb_build_object('product_id', (select id from public.products where name = 'Cotton T-Shirt'),
+      'variant_id', (select v.id from public.product_variants v join public.products p on p.id = v.product_id
+                     where p.name = 'Cotton T-Shirt' and v.label = '4Y'), 'quantity', 8),
+    jsonb_build_object('product_id', (select id from public.products where name = 'Building Blocks Set'),
+      'variant_id', null, 'quantity', 4)))
+$f$;
+
 -- Ids used below:
 --   00000000-0000-4000-8000-000000000001  logged-in user, member of NO shop
 --   00000000-0000-4000-8000-000000000002  temporary user, member of the demo shop
+--   00000000-0000-4000-8000-000000000003  temporary user, STAFF of the demo shop
+--   00000000-0000-4000-8000-000000000004  temporary user, owner of ANOTHER shop
 
 -- =====================================================================
 -- A. ANON (not logged in) — reading private data
@@ -704,9 +785,9 @@ insert into sec_results (who, test, result) values
     p_setup => $q$insert into auth.users (id) values ('00000000-0000-4000-8000-000000000002');
       insert into public.shop_members (shop_id, user_id, role)
       select id, '00000000-0000-4000-8000-000000000002', 'owner' from public.shops where slug = 'kefada-demo'$q$)),
-('staff', 'staff cannot read notification settings',
+('staff', 'staff CAN read (not change) notification settings (Step 8)',
   pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
-    'select * from public.shop_notification_settings', 'empty',
+    'select * from public.shop_notification_settings', 'rows',
     p_setup => $q$insert into auth.users (id) values ('00000000-0000-4000-8000-000000000003');
       insert into public.shop_members (shop_id, user_id, role)
       select id, '00000000-0000-4000-8000-000000000003', 'staff' from public.shops where slug = 'kefada-demo'$q$)),
@@ -1246,6 +1327,466 @@ insert into sec_results (who, test, result) values
        where id = pg_temp.last_order_id()$q$));
 
 -- =====================================================================
+-- L. SETTINGS PAGE (Step 8): who can change what, validation, lists,
+--    storage, and place_order's closed / minimum / max-pieces rules
+--   ...0002 = owner of the demo shop      ...0003 = staff of the demo shop
+--   ...0004 = owner of ANOTHER shop        ...0001 = member of no shop
+-- =====================================================================
+insert into sec_results (who, test, result) values
+-- ---- shops: direct changes ----
+('owner', 'owner CAN change the shop name (control)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shops set name = 'New name' where slug = 'kefada-demo'$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('staff', 'staff change the shop name',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    $q$update public.shops set name = 'Hacked' where slug = 'kefada-demo'$q$, 'empty',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('staff', 'staff close the shop (accepting_orders)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    $q$update public.shops set accepting_orders = false where slug = 'kefada-demo'$q$, 'empty',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('other owner', 'owner of another shop changes this shop''s settings',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000004',
+    $q$update public.shops set name = 'Hacked', max_pieces = 50 where slug = 'kefada-demo'$q$, 'empty',
+    p_setup => $q$select pg_temp.add_other_shop_owner()$q$)),
+('anon', 'change shop settings',
+  pg_temp.sec_check('anon', null, $q$update public.shops set accepting_orders = false$q$, 'denied')),
+('owner', 'owner changes the shop address (slug)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shops set slug = 'my-new-address' where slug = 'kefada-demo'$q$, 'denied',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('owner', 'owner un-suspends / suspends the shop (is_active)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shops set is_active = true where slug = 'kefada-demo'$q$, 'denied',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('owner', 'owner lists the shop in the mall (is_listed)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shops set is_listed = true where slug = 'kefada-demo'$q$, 'denied',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('owner', 'owner changes the mall category / old logo_url',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shops set category_id = null, logo_url = 'https://evil.example/x.png' where slug = 'kefada-demo'$q$, 'denied',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+
+-- ---- shops: validation (as the owner) ----
+('validation', 'WhatsApp: landline refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shops set whatsapp_number = '+9611123456' where slug = 'kefada-demo'$q$, 'error', 'shops_whatsapp_mobile',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('validation', 'WhatsApp: too short refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shops set whatsapp_number = '+96170123' where slug = 'kefada-demo'$q$, 'error', 'shops_whatsapp_mobile',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('validation', 'WhatsApp: mobile accepted (control)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shops set whatsapp_number = '+9613123456' where slug = 'kefada-demo'$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('validation', 'Instagram with @ or a link refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shops set instagram = 'https://instagram.com/x' where slug = 'kefada-demo'$q$, 'error', 'shops_instagram_username',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('validation', 'Facebook must be a full facebook.com link',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shops set facebook = 'kefada.page' where slug = 'kefada-demo'$q$, 'error', 'shops_facebook_link',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('validation', 'tagline over 80 characters refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shops set tagline = repeat('a', 81) where slug = 'kefada-demo'$q$, 'error', 'shops_tagline_len',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('validation', 'hero text over 300 characters refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shops set hero_text = repeat('a', 301) where slug = 'kefada-demo'$q$, 'error', 'violates check constraint',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('validation', 'link-preview description over 160 characters refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shops set description = repeat('a', 161) where slug = 'kefada-demo'$q$, 'error', 'shops_description_len',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('validation', 'delivery note over 160 characters refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shops set delivery_note = repeat('a', 161) where slug = 'kefada-demo'$q$, 'error', 'shops_delivery_note_len',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('validation', 'pickup note over 160 characters refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shops set pickup_note = repeat('a', 161) where slug = 'kefada-demo'$q$, 'error', 'shops_pickup_note_len',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('validation', 'policy over 1000 characters refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shops set policy_text = repeat('a', 1001) where slug = 'kefada-demo'$q$, 'error', 'shops_policy_len',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('validation', 'policy ON with no text refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shops set policy_on = true, policy_text = null where slug = 'kefada-demo'$q$, 'error', 'shops_policy_needs_text',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('validation', 'closed message over 200 characters refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shops set closed_message = repeat('a', 201) where slug = 'kefada-demo'$q$, 'error', 'shops_closed_message_len',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('validation', 'minimum order of $0 refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shops set min_order_amount = 0 where slug = 'kefada-demo'$q$, 'error', 'shops_min_order_range',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('validation', 'max pieces 51 refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shops set max_pieces = 51 where slug = 'kefada-demo'$q$, 'error', 'shops_max_pieces_range',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('validation', 'max pieces 0 refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shops set max_pieces = 0 where slug = 'kefada-demo'$q$, 'error', 'shops_max_pieces_range',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('validation', '"Only N left" over 99 refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shops set low_stock_at = 100 where slug = 'kefada-demo'$q$, 'error', 'shops_low_stock_range',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('validation', 'delivery AND pickup both off refused (direct update)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shops set delivery_on = false, pickup_on = false where slug = 'kefada-demo'$q$, 'error', 'shops_delivery_or_pickup',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('validation', 'logo pointing into ANOTHER shop''s folder refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shops set logo_path = '11111111-1111-4111-8111-111111111111/logo-abc.webp' where slug = 'kefada-demo'$q$,
+    'error', 'shops_logo_path_own_folder',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('validation', 'logo in the shop''s own folder accepted (control)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shops set logo_path = id::text || '/logo-abc123.webp' where slug = 'kefada-demo'$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+
+-- ---- save_delivery_settings ----
+('validation', 'save delivery: both delivery and pickup off refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    pg_temp.delivery_call('false', 'fixed', '3', '{}', 'false', 'null', 'false'), 'error', 'needs delivery or pickup',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('validation', 'save delivery: per governorate with no fee at all refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    pg_temp.delivery_call('true', 'governorate', '0', '{}', 'false', 'null', 'false'), 'error', 'at least one governorate',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('validation', 'save delivery: fee over 1000 refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    pg_temp.delivery_call('true', 'governorate', '0', '{"Beirut": 1001}', 'false', 'null', 'false'), 'error', 'between 0 and 1000',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('validation', 'save delivery: free delivery with no amount refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    pg_temp.delivery_call('true', 'fixed', '3', '{}', 'true', 'null', 'false'), 'error', 'amount for free delivery',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('owner', 'save delivery: owner saves pickup + fees (all saved together)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    pg_temp.delivery_call('true', 'governorate', '0', '{"Beirut": 2, "North": 6}', 'false', 'null', 'true')
+    || $q$; select 1 from public.shops s
+         where s.slug = 'kefada-demo' and s.pickup_on and s.pickup_note = 'Hamra, 10am-6pm'
+           and (select count(*) from public.shop_delivery_fees f where f.shop_id = s.id and f.fee is not null) = 2
+           and (select fee from public.shop_delivery_fees f where f.shop_id = s.id and f.governorate = 'Beirut') = 2$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('staff', 'save delivery settings as staff',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    pg_temp.delivery_call('true', 'fixed', '0', '{}', 'false', 'null', 'true'), 'denied',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('other owner', 'save ANOTHER shop''s delivery settings',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000004',
+    pg_temp.delivery_call('true', 'fixed', '0', '{}', 'false', 'null', 'true'), 'denied',
+    p_setup => $q$select pg_temp.add_other_shop_owner()$q$)),
+('staff', 'staff change a delivery fee directly',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    $q$update public.shop_delivery_fees set fee = 0$q$, 'empty',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+
+-- ---- private settings: prefix, deposits, templates ----
+('validation', 'invoice prefix "k" (lowercase, 1 char) refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shop_private_settings set invoice_prefix = 'k'$q$, 'error', 'violates check constraint',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('validation', 'invoice prefix "ABCDEF" (6 chars) refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shop_private_settings set invoice_prefix = 'ABCDEF'$q$, 'error', 'shop_private_settings_prefix_2_5',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('validation', 'invoice prefix "K-F" refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shop_private_settings set invoice_prefix = 'K-F'$q$, 'error', 'violates check constraint',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('owner', 'invoice prefix "AB1" accepted (control)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shop_private_settings set invoice_prefix = 'AB1'$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('staff', 'staff change the invoice prefix',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    $q$update public.shop_private_settings set invoice_prefix = 'XX'$q$, 'empty',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('staff', 'staff turn deposits on / edit WhatsApp templates',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    $q$update public.shop_private_settings set deposit_on = true, deposit_type = 'delivery_fee', wa_confirm_template = 'x'$q$, 'empty',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('staff', 'staff CAN read private settings (read-only page)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    $q$select deposit_on, wa_confirm_template from public.shop_private_settings$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('other owner', 'read ANOTHER shop''s private settings (deposits, templates)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000004',
+    $q$select * from public.shop_private_settings
+       where shop_id = (select id from public.shops where slug = 'kefada-demo')$q$, 'empty',
+    p_setup => $q$select pg_temp.add_other_shop_owner()$q$)),
+('other owner', 'change ANOTHER shop''s deposit settings',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000004',
+    $q$update public.shop_private_settings set deposit_on = true, deposit_type = 'delivery_fee'
+       where shop_id = (select id from public.shops where slug = 'kefada-demo')$q$, 'empty',
+    p_setup => $q$select pg_temp.add_other_shop_owner()$q$)),
+('validation', 'deposit ON (fixed) with no amount refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shop_private_settings set deposit_on = true, deposit_type = 'fixed', deposit_amount = null$q$,
+    'error', 'shop_private_settings_deposit_amount',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('owner', 'deposit ON "same as delivery fee" (no amount needed) accepted',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shop_private_settings set deposit_on = true, deposit_type = 'delivery_fee', deposit_amount = null,
+       deposit_instructions = 'Send via Whish to 70 123 456'$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('validation', 'deposit instructions over 300 characters refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shop_private_settings set deposit_instructions = repeat('a', 301)$q$, 'error', 'violates check constraint',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('validation', 'WhatsApp template over 1000 characters refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shop_private_settings set wa_review_template = repeat('a', 1001)$q$, 'error', 'violates check constraint',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+
+-- ---- notification emails ----
+('validation', 'order emails: 4 addresses refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shop_notification_settings set order_emails = array['a@x.com', 'b@x.com', 'c@x.com', 'd@x.com']$q$,
+    'error', 'violates check constraint',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('validation', 'order emails: same address twice refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shop_notification_settings set order_emails = array['a@x.com', 'A@X.com']$q$,
+    'error', 'shop_notification_settings_max_3_unique',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('validation', 'order emails: invalid address refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shop_notification_settings set order_emails = array['not-an-email']$q$,
+    'error', 'violates check constraint',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('staff', 'staff change the order emails',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    $q$update public.shop_notification_settings set order_emails = array['staff@x.com']$q$, 'empty',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('other owner', 'read ANOTHER shop''s order emails',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000004',
+    $q$select * from public.shop_notification_settings
+       where shop_id = (select id from public.shops where slug = 'kefada-demo')$q$, 'empty',
+    p_setup => $q$select pg_temp.add_other_shop_owner()$q$)),
+
+-- ---- catalog lists (collections + categories) ----
+('anon', 'CAN read collections/categories of an active shop (shop filters)',
+  pg_temp.sec_check('anon', null,
+    $q$select * from public.shop_catalog_labels where name = 'Boys'$q$, 'rows')),
+('anon', 'add a collection',
+  pg_temp.sec_check('anon', null,
+    $q$insert into public.shop_catalog_labels (shop_id, kind, name)
+       select id, 'collection', 'x' from public.shops where slug = 'kefada-demo'$q$, 'denied')),
+('staff', 'staff add a category',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    $q$insert into public.shop_catalog_labels (shop_id, kind, name)
+       select id, 'category', 'Babies' from public.shops where slug = 'kefada-demo'$q$, 'denied',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('owner', 'owner CAN add a category (control)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$insert into public.shop_catalog_labels (shop_id, kind, name)
+       select id, 'category', 'Babies' from public.shops where slug = 'kefada-demo'$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('validation', 'list name twice ("boys" vs "Boys") refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$insert into public.shop_catalog_labels (shop_id, kind, name)
+       select id, 'category', 'boys' from public.shops where slug = 'kefada-demo'$q$, 'error', 'shop_catalog_labels_name_key',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('owner', 'rename directly (skipping the products) refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shop_catalog_labels set name = 'Big Boys' where name = 'Boys'$q$, 'error', 'rename_catalog_label',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('owner', 'delete directly (skipping the products) refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$delete from public.shop_catalog_labels where name = 'Boys'$q$, 'error', 'delete_catalog_label',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('owner', 'rename a category also renames it on its 2 products',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$select public.rename_catalog_label((select id from public.shop_catalog_labels where name = 'Boys'), 'Big Boys');
+       select 1 from public.products where 'Big Boys' = any(categories) and not ('Boys' = any(categories))
+       having count(*) = 2$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('owner', 'rename a collection also renames it on its product',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$select public.rename_catalog_label((select id from public.shop_catalog_labels where name = 'Toys'), 'Games');
+       select 1 from public.products where name = 'Building Blocks Set' and collection = 'Games'$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('validation', 'rename to a name already in the list refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$select public.rename_catalog_label((select id from public.shop_catalog_labels where name = 'Boys'), 'girls')$q$,
+    'error', 'already in the list',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('owner', 'delete a category removes it from its products (products stay)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$select public.delete_catalog_label((select id from public.shop_catalog_labels where name = 'Girls'));
+       select 1 from public.products p
+        where p.name in ('Cotton T-Shirt', 'Kids Hoodie') and p.categories = array['Boys']
+       having count(*) = 2$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('owner', 'usage count: "Boys" is used by 2 products',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$select 1 from public.catalog_label_usage((select id from public.shops where slug = 'kefada-demo')) u
+       join public.shop_catalog_labels l on l.id = u.label_id where l.name = 'Boys' and u.products = 2$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('staff', 'staff rename a category',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    $q$select public.rename_catalog_label((select id from public.shop_catalog_labels where name = 'Boys'), 'X')$q$, 'denied',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('staff', 'staff delete a category',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    $q$select public.delete_catalog_label((select id from public.shop_catalog_labels where name = 'Boys'))$q$, 'denied',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('other owner', 'rename ANOTHER shop''s category',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000004',
+    $q$select public.rename_catalog_label((select id from public.shop_catalog_labels where name = 'Boys'), 'X')$q$, 'denied',
+    p_setup => $q$select pg_temp.add_other_shop_owner()$q$)),
+('non-member', 'usage counts of a shop I''m not in',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001',
+    $q$select * from public.catalog_label_usage((select id from public.shops where slug = 'kefada-demo'))$q$, 'denied')),
+
+-- ---- favourite option types (presets) ----
+('anon', 'read option presets',
+  pg_temp.sec_check('anon', null, $q$select * from public.shop_option_presets$q$, 'denied')),
+('non-member', 'read option presets of a shop I''m not in',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001',
+    $q$select * from public.shop_option_presets$q$, 'empty')),
+('staff', 'staff CAN read option presets (control)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    $q$select * from public.shop_option_presets where name = 'Size'$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('staff', 'staff add an option preset',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    $q$insert into public.shop_option_presets (shop_id, name, "values")
+       select id, 'Weight', array['250 g', '1 kg'] from public.shops where slug = 'kefada-demo'$q$, 'denied',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('owner', 'owner CAN add an option preset (control)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$insert into public.shop_option_presets (shop_id, name, "values")
+       select id, 'Weight', array['250 g', '1 kg'] from public.shops where slug = 'kefada-demo'$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('validation', 'option preset with the same value twice refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shop_option_presets set "values" = array['S', 's'] where name = 'Size'$q$, 'error', 'violates check constraint',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('validation', 'option preset with no values refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shop_option_presets set "values" = '{}' where name = 'Size'$q$, 'error', 'violates check constraint',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('owner', 'save the whole option-type list (new order, renamed)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$select public.save_option_presets((select id from public.shops where slug = 'kefada-demo'),
+         '[{"name": "Flavour", "values": ["Vanilla", "Chocolate"]}, {"name": "Size", "values": ["S", "M"]}]');
+       select 1 from public.shop_option_presets
+        where (name = 'Flavour' and position = 1 and "values" = array['Vanilla', 'Chocolate'])
+           or (name = 'Size' and position = 2)
+       having count(*) = 2 and (select count(*) from public.shop_option_presets) = 2$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('staff', 'staff save the option-type list',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    $q$select public.save_option_presets((select id from public.shops where slug = 'kefada-demo'), '[]')$q$, 'denied',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('validation', 'option-type list with a duplicate value refused (nothing saved)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$select public.save_option_presets((select id from public.shops where slug = 'kefada-demo'),
+         '[{"name": "Size", "values": ["S", "S"]}]')$q$, 'error', 'violates check constraint',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('other owner', 'change ANOTHER shop''s option presets',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000004',
+    $q$update public.shop_option_presets set "values" = array['X']$q$, 'empty',
+    p_setup => $q$select pg_temp.add_other_shop_owner()$q$)),
+
+-- ---- storage bucket "shop-assets" ----
+('config', 'bucket shop-assets: public read, 300 KB, JPG/PNG/WebP only',
+  pg_temp.sec_check(null, null,
+    $q$select 1 from storage.buckets where id = 'shop-assets' and public and file_size_limit = 307200
+       and allowed_mime_types @> array['image/jpeg', 'image/png', 'image/webp']
+       and cardinality(allowed_mime_types) = 3$q$, 'rows')),
+('owner', 'owner CAN upload a logo to their shop''s folder (control)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    pg_temp.asset_insert('logo-abc123.webp'), 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('staff', 'staff upload a logo',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    pg_temp.asset_insert('logo-abc123.webp'), 'denied',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('other owner', 'upload into ANOTHER shop''s folder',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000004',
+    pg_temp.asset_insert('logo-abc123.webp'), 'denied',
+    p_setup => $q$select pg_temp.add_other_shop_owner()$q$)),
+('anon', 'upload a shop asset',
+  pg_temp.sec_check('anon', null, pg_temp.asset_insert('logo-abc123.webp'), 'denied')),
+('owner', 'owner uploads a file with a bad name (.exe)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    pg_temp.asset_insert('logo-abc.exe'), 'denied',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('owner', 'owner uploads into a sub-folder',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    pg_temp.asset_insert('x/logo-abc.webp'), 'denied',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('owner', 'owner uploads outside any shop folder',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$insert into storage.objects (bucket_id, name) values ('shop-assets', 'logo-abc.webp')$q$, 'denied',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('staff', 'staff replace (update) the shop''s logo file',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    $q$update storage.objects set metadata = '{"hacked": true}' where bucket_id = 'shop-assets'$q$, 'empty',
+    p_setup => pg_temp.asset_insert('logo-abc123.webp') ||
+      $q$; select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('staff', 'staff delete the shop''s logo file',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    $q$delete from storage.objects where bucket_id = 'shop-assets'$q$, 'empty',
+    p_setup => pg_temp.asset_insert('logo-abc123.webp') ||
+      $q$; select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff');
+         select set_config('storage.allow_delete_query', 'true', true)$q$)),
+('other owner', 'delete ANOTHER shop''s logo file',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000004',
+    $q$delete from storage.objects where bucket_id = 'shop-assets'$q$, 'empty',
+    p_setup => pg_temp.asset_insert('logo-abc123.webp') ||
+      $q$; select pg_temp.add_other_shop_owner();
+         select set_config('storage.allow_delete_query', 'true', true)$q$)),
+('owner', 'owner CAN delete their own logo file (control)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$delete from storage.objects where bucket_id = 'shop-assets'$q$, 'rows',
+    p_setup => pg_temp.asset_insert('logo-abc123.webp') ||
+      $q$; select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner');
+         select set_config('storage.allow_delete_query', 'true', true)$q$)),
+('anon', 'list shop asset files',
+  pg_temp.sec_check('anon', null, $q$select * from storage.objects where bucket_id = 'shop-assets'$q$, 'empty',
+    p_setup => pg_temp.asset_insert('logo-abc123.webp'))),
+
+-- ---- place_order: closed shop, minimum order, max pieces ----
+('place_order', 'closed shop refused with the owner''s message',
+  pg_temp.sec_check(null, null, 'select pg_temp.demo_order()', 'error', 'On holiday until Monday',
+    p_setup => $q$update public.shops set accepting_orders = false, closed_message = 'On holiday until Monday'
+                  where slug = 'kefada-demo'$q$)),
+('place_order', 'closed shop with no message: a default message',
+  pg_temp.sec_check(null, null, 'select pg_temp.demo_order()', 'error', 'is not taking orders right now',
+    p_setup => $q$update public.shops set accepting_orders = false where slug = 'kefada-demo'$q$)),
+('place_order', 'below the minimum order refused ("Minimum order is $30")',
+  pg_temp.sec_check(null, null, 'select pg_temp.demo_order()', 'error', 'Minimum order is $30.',
+    p_setup => $q$update public.shops set min_order_amount = 30 where slug = 'kefada-demo'$q$)),
+('place_order', 'minimum with cents shown as $25.50',
+  pg_temp.sec_check(null, null, 'select pg_temp.demo_order()', 'error', 'Minimum order is $25.50.',
+    p_setup => $q$update public.shops set min_order_amount = 25.50 where slug = 'kefada-demo'$q$)),
+('place_order', 'exactly the minimum accepted (subtotal, delivery not counted)',
+  pg_temp.sec_check(null, null, $q$select 1 where (pg_temp.demo_order() ->> 'ok')::boolean$q$, 'rows',
+    p_setup => $q$update public.shops set min_order_amount = 25 where slug = 'kefada-demo'$q$)),
+('place_order', 'over the shop''s own max pieces (3) refused',
+  pg_temp.sec_check(null, null, $q$select pg_temp.demo_order('Whey Protein 1kg', 4, p_variant => 'Chocolate')$q$,
+    'error', 'at most 3 pieces',
+    p_setup => $q$update public.shops set max_pieces = 3 where slug = 'kefada-demo'$q$)),
+('place_order', 'default max 20: 22 pieces refused',
+  pg_temp.sec_check(null, null, 'select pg_temp.order_22_pieces()', 'error', 'at most 20 pieces')),
+('place_order', 'shop''s own max (30) used: 22 pieces accepted',
+  pg_temp.sec_check(null, null, $q$select 1 where (pg_temp.order_22_pieces() ->> 'ok')::boolean$q$, 'rows',
+    p_setup => $q$update public.shops set max_pieces = 30 where slug = 'kefada-demo'$q$));
+
+-- =====================================================================
 -- G. CONFIGURATION checks (run as admin; each must find 0 problems)
 -- =====================================================================
 insert into sec_results (who, test, result) values
@@ -1271,7 +1812,9 @@ insert into sec_results (who, test, result) values
        and has_function_privilege('authenticated', p.oid, 'EXECUTE')
        and p.proname not in ('get_phone_risk',
                              'confirm_order', 'mark_paid', 'cancel_order', 'mark_refused',
-                             'shop_dashboard_summary')$q$, 'empty')),
+                             'shop_dashboard_summary',
+                             'catalog_label_usage', 'rename_catalog_label', 'delete_catalog_label',
+                             'save_delivery_settings', 'save_option_presets')$q$, 'empty')),
 ('config', 'anon can run NO private function',
   pg_temp.sec_check(null, null, $q$select p.proname from pg_proc p
      where p.pronamespace = 'private'::regnamespace and has_function_privilege('anon', p.oid, 'EXECUTE')$q$, 'empty')),
@@ -1282,10 +1825,14 @@ insert into sec_results (who, test, result) values
                 and table_name in ('shop_categories', 'shops', 'products', 'product_variants',
                                    'lebanon_governorates', 'lebanon_districts', 'shop_delivery_fees',
                                    'product_option_types', 'product_option_values', 'product_photos',
-                                   'product_reviews_public'))$q$, 'empty')),
+                                   'product_reviews_public', 'shop_catalog_labels'))$q$, 'empty')),
+('config', 'nobody but admin/server has TRUNCATE / REFERENCES / TRIGGER on any table',
+  pg_temp.sec_check(null, null, $q$select table_name, grantee, privilege_type from information_schema.role_table_grants
+     where table_schema = 'public' and grantee in ('anon', 'authenticated', 'PUBLIC')
+       and privilege_type in ('TRUNCATE', 'REFERENCES', 'TRIGGER')$q$, 'empty')),
 ('config', 'costs, private settings and money are never granted to anon',
   pg_temp.sec_check(null, null, $q$select t from unnest(array['public.product_costs', 'public.shop_private_settings',
-       'public.money_entries', 'public.order_history']) t
+       'public.money_entries', 'public.order_history', 'public.shop_option_presets']) t
      where to_regclass(t) is not null and has_table_privilege('anon', t, 'SELECT, INSERT, UPDATE, DELETE')$q$, 'empty')),
 ('config', 'nobody but admin/server can touch delivery_outcomes',
   pg_temp.sec_check(null, null, $q$select r from unnest(array['anon', 'authenticated']) r

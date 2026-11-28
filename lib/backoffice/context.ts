@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { cache } from "react";
 import { createClient } from "@/lib/supabase/server";
+import { shopAssetUrl } from "@/lib/storefront/photos";
 
 /** Cookie that remembers the last shop chosen in the switcher. */
 export const CURRENT_SHOP_COOKIE = "bo_shop";
@@ -39,21 +40,21 @@ export const getDashboardContext = cache(async (): Promise<DashboardContext> => 
 
   const { data: rows, error } = await supabase
     .from("shop_members")
-    .select("role, shops (id, name, slug, logo_url, is_active)")
+    .select("role, shops (id, name, slug, logo_url, logo_path, is_active)")
     .eq("user_id", userId);
   if (error) throw new Error(`Could not load your shops: ${error.message}`);
 
   const shops: MyShop[] = (rows ?? [])
     .map((r) => {
       const s = (Array.isArray(r.shops) ? r.shops[0] : r.shops) as
-        | { id: string; name: string; slug: string; logo_url: string | null; is_active: boolean }
+        | { id: string; name: string; slug: string; logo_url: string | null; logo_path: string | null; is_active: boolean }
         | null;
       return s
         ? {
             id: s.id,
             name: s.name,
             slug: s.slug,
-            logoUrl: s.logo_url,
+            logoUrl: shopAssetUrl(s.logo_path) ?? s.logo_url,
             isActive: s.is_active,
             role: r.role === "owner" ? ("owner" as const) : ("staff" as const),
           }

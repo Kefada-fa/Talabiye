@@ -7,6 +7,7 @@ import { useCart } from "@/lib/cart/cart";
 import { formatPrice } from "@/lib/format";
 import { fill, t } from "@/lib/i18n";
 import { normalizeLebanesePhone } from "@/lib/phone";
+import { checkoutBlock } from "@/lib/storefront/ordering";
 import type { DeliveryArea, StoreShop } from "@/lib/storefront/types";
 import { OrderTotals } from "./cart-view";
 
@@ -90,6 +91,8 @@ export function CheckoutForm({
   }
 
   const stockProblems = state.stockProblems ?? [];
+  // Closed shop or below the minimum: no "Place order" (the database checks too).
+  const blocked = checkoutBlock(shop, subtotal);
 
   return (
     <form action={formAction} onSubmit={validate} noValidate className="flex flex-col gap-6">
@@ -139,6 +142,7 @@ export function CheckoutForm({
         </div>
         {!shop.deliveryOn && <p className="text-sm text-zinc-500">{t.checkout.deliveryNotAvailable}</p>}
         {method === "delivery" && shop.deliveryNote && <p className="text-sm text-zinc-500">{shop.deliveryNote}</p>}
+        {method === "pickup" && shop.pickupNote && <p className="text-sm text-zinc-500">{shop.pickupNote}</p>}
       </section>
 
       {method === "delivery" && (
@@ -271,7 +275,10 @@ export function CheckoutForm({
         )}
       </div>
 
-      <button type="submit" disabled={pending}
+      {blocked && (
+        <p role="status" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">{blocked}</p>
+      )}
+      <button type="submit" disabled={pending || !!blocked}
         className="h-12 w-full rounded-full bg-brand-primary text-base font-semibold text-brand-on-primary disabled:opacity-60">
         {pending ? t.checkout.placing : t.checkout.placeOrder}
       </button>

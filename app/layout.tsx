@@ -15,6 +15,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
+  // Full links in link previews (og:url…) are built from APP_URL.
+  metadataBase: new URL((process.env.APP_URL ?? "http://localhost:3000").replace(/\/+$/, "")),
   title: { default: brand.name, template: `%s · ${brand.name}` },
   description: brand.tagline,
   icons: { icon: brand.logo.src },

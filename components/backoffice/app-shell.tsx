@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { getUnconfirmedCountAction, switchShopAction } from "@/lib/backoffice/actions";
 import { logOutAction } from "@/lib/auth/actions";
 import { fill, t } from "@/lib/i18n";
+import { SETTINGS_BASE, SETTINGS_SECTIONS } from "@/lib/settings/sections";
 import {
   BoxIcon, ChartIcon, CloseIcon, DotsIcon, ExternalIcon, GearIcon, HomeIcon,
   InvoiceIcon, LogoutIcon, PlusIcon, PulseIcon, UsersIcon,
@@ -88,11 +89,13 @@ export function AppShell({
           <ul className="flex flex-col gap-1">
             {NAV.map((item) => {
               const active = isActive(pathname, item.href, "exact" in item && item.exact);
+              const isSettings = item.href === SETTINGS_BASE;
               return (
                 <li key={item.href}>
                   <Link
                     href={item.href}
-                    aria-current={active ? "page" : undefined}
+                    aria-current={active && pathname === item.href ? "page" : undefined}
+                    aria-expanded={isSettings ? active : undefined}
                     className={`flex min-h-11 items-center gap-3 rounded-xl px-3 text-[15px] font-medium transition-colors ${
                       active ? "bg-bo-sidebar-active text-white" : "hover:bg-bo-sidebar-active/60 hover:text-white"
                     }`}
@@ -100,7 +103,32 @@ export function AppShell({
                     <item.Icon />
                     <span className="flex-1">{item.label}</span>
                     {"badge" in item && item.badge && <CountBadge count={unconfirmed} />}
+                    {isSettings && (
+                      <span aria-hidden className={`text-xs transition-transform ${active ? "rotate-180" : ""}`}>▾</span>
+                    )}
                   </Link>
+                  {/* Settings opens like a dropdown: its sections, smaller. */}
+                  {isSettings && active && (
+                    <ul aria-label={t.backoffice.settings.menuLabel} className="mt-1 flex flex-col gap-0.5 border-l border-white/10 pl-2 ml-5">
+                      {SETTINGS_SECTIONS.map((sub) => {
+                        const href = `${SETTINGS_BASE}/${sub.slug}`;
+                        const subActive = pathname === href;
+                        return (
+                          <li key={sub.slug}>
+                            <Link
+                              href={href}
+                              aria-current={subActive ? "page" : undefined}
+                              className={`flex min-h-11 items-center rounded-lg px-3 text-[13px] transition-colors ${
+                                subActive ? "bg-white/10 font-semibold text-white" : "text-bo-sidebar-text/85 hover:bg-bo-sidebar-active/60 hover:text-white"
+                              }`}
+                            >
+                              {sub.label}
+                            </Link>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
                 </li>
               );
             })}

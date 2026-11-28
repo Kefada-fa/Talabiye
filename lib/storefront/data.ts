@@ -1,7 +1,7 @@
 import "server-only";
 import { cache } from "react";
 import { createPublicClient } from "@/lib/supabase/public";
-import { photoUrl } from "./photos";
+import { photoUrl, shopAssetUrl } from "./photos";
 import type {
   DeliveryArea,
   StoreOptionType,
@@ -34,7 +34,8 @@ export const getShopBySlug = cache(async (slug: string): Promise<StoreShop | nul
     .select(
       "id, name, slug, description, logo_url, whatsapp_number, delivery_on, pickup_on, delivery_mode, " +
         "delivery_fixed, free_delivery_on, free_delivery_above, delivery_note, description_on, " +
-        "policy_on, policy_text, low_stock_at, hero_text",
+        "policy_on, policy_text, low_stock_at, hero_text, tagline, pickup_note, logo_path, share_image_path, " +
+        "accepting_orders, closed_message, min_order_amount, max_pieces, instagram, facebook",
     )
     .eq("slug", slug)
     .eq("is_active", true)
@@ -49,7 +50,7 @@ export const getShopBySlug = cache(async (slug: string): Promise<StoreShop | nul
     name: s.name as string,
     slug: s.slug as string,
     description: (s.description as string | null) ?? null,
-    logoUrl: (s.logo_url as string | null) ?? null,
+    logoUrl: shopAssetUrl(s.logo_path as string | null) ?? ((s.logo_url as string | null) || null),
     whatsappNumber: (s.whatsapp_number as string | null) ?? null,
     deliveryOn: Boolean(s.delivery_on),
     pickupOn: Boolean(s.pickup_on),
@@ -63,6 +64,15 @@ export const getShopBySlug = cache(async (slug: string): Promise<StoreShop | nul
     policyText: (s.policy_text as string | null) ?? null,
     lowStockAt: Number(s.low_stock_at ?? 3),
     heroText: (s.hero_text as string | null) ?? null,
+    tagline: (s.tagline as string | null) ?? null,
+    pickupNote: (s.pickup_note as string | null) ?? null,
+    acceptingOrders: s.accepting_orders !== false,
+    closedMessage: (s.closed_message as string | null) ?? null,
+    minOrder: num(s.min_order_amount as number | string | null),
+    maxPieces: Number(s.max_pieces ?? 20),
+    shareImageUrl: shopAssetUrl(s.share_image_path as string | null),
+    instagram: (s.instagram as string | null) ?? null,
+    facebook: (s.facebook as string | null) ?? null,
   };
 });
 

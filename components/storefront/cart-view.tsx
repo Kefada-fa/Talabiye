@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useCart } from "@/lib/cart/cart";
 import { formatPrice, sumMoney } from "@/lib/format";
 import { t } from "@/lib/i18n";
+import { checkoutBlock } from "@/lib/storefront/ordering";
+import type { StoreShop } from "@/lib/storefront/types";
 import { ProductImage } from "./product-image";
 import { QuantityPicker } from "./quantity-picker";
 
@@ -11,7 +13,7 @@ import { QuantityPicker } from "./quantity-picker";
  * The cart page: items, quantities and subtotal. The delivery fee depends
  * on pickup/delivery and the address, so it's calculated at checkout.
  */
-export function CartView({ slug }: { slug: string }) {
+export function CartView({ slug, shop }: { slug: string; shop: StoreShop }) {
   const { items, hydrated, subtotal, setQuantity, remove } = useCart(slug);
 
   if (!hydrated) {
@@ -31,6 +33,8 @@ export function CartView({ slug }: { slug: string }) {
       </div>
     );
   }
+
+  const blocked = checkoutBlock(shop, subtotal);
 
   return (
     <div className="flex flex-col gap-6">
@@ -75,12 +79,21 @@ export function CartView({ slug }: { slug: string }) {
 
       <OrderTotals subtotal={subtotal} deliveryFee={null} />
 
-      <Link
-        href={`/${slug}/checkout`}
-        className="flex h-12 items-center justify-center rounded-full bg-brand-primary text-base font-semibold text-brand-on-primary"
-      >
-        {t.cart.checkout}
-      </Link>
+      {blocked ? (
+        <>
+          <p role="status" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">{blocked}</p>
+          <span aria-disabled="true" className="flex h-12 items-center justify-center rounded-full bg-zinc-300 text-base font-semibold text-zinc-600">
+            {t.cart.checkout}
+          </span>
+        </>
+      ) : (
+        <Link
+          href={`/${slug}/checkout`}
+          className="flex h-12 items-center justify-center rounded-full bg-brand-primary text-base font-semibold text-brand-on-primary"
+        >
+          {t.cart.checkout}
+        </Link>
+      )}
       <p className="text-center text-xs text-zinc-500">{t.cart.pricesNote}</p>
     </div>
   );
