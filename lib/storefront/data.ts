@@ -35,7 +35,8 @@ export const getShopBySlug = cache(async (slug: string): Promise<StoreShop | nul
       "id, name, slug, description, logo_url, whatsapp_number, delivery_on, pickup_on, delivery_mode, " +
         "delivery_fixed, free_delivery_on, free_delivery_above, delivery_note, description_on, " +
         "policy_on, policy_text, low_stock_at, hero_text, tagline, pickup_note, logo_path, share_image_path, " +
-        "accepting_orders, closed_message, min_order_amount, max_pieces, instagram, facebook",
+        "accepting_orders, closed_message, min_order_amount, max_pieces, instagram, facebook, " +
+        "primary_color, accent_color",
     )
     .eq("slug", slug)
     .eq("is_active", true)
@@ -73,6 +74,8 @@ export const getShopBySlug = cache(async (slug: string): Promise<StoreShop | nul
     shareImageUrl: shopAssetUrl(s.share_image_path as string | null),
     instagram: (s.instagram as string | null) ?? null,
     facebook: (s.facebook as string | null) ?? null,
+    primaryColor: (s.primary_color as string | null) ?? null,
+    accentColor: (s.accent_color as string | null) ?? null,
   };
 });
 

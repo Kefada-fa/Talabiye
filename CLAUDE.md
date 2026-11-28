@@ -147,6 +147,10 @@ FEATURES only, never for product rules.**
   max_pieces, reviews_on. Per-governorate fees: `shop_delivery_fees` (no row /
   null = no delivery). The shop page's `generateMetadata` builds the link
   preview (Open Graph) from description + share image (or logo).
+- Shop colors: `app/[slug]/layout.tsx` (`ShopColors`) overrides the
+  `--brand-primary` / `--brand-accent` / `--brand-on-primary` variables on
+  that shop's pages (text on the main color: white or near-black, whichever
+  reads better). No colors set → platform colors from `config/brand.ts`.
 - Closed shop: the shop page shows the message on top, cart/checkout are
   blocked (`lib/storefront/ordering.ts`), and place_order refuses.
 - Product photos: `product_photos.storage_path` → `lib/storefront/photos.ts`
@@ -287,8 +291,6 @@ Plan (no redesign needed):
 - **Photos:** the Supabase Storage bucket `product-photos` and product
   uploads are not set up yet (placeholders are shown). `shop-assets` (logo,
   share image) is done.
-- **Shop colors** are saved (Settings) but the storefront still uses the
-  platform colors until Step 10.
 - **Deposits / WhatsApp templates** are settings only; the invoice buttons
   (Request deposit, Mark deposit paid, send messages) come in Step 11.
 - **Unsaved-changes warning** covers tab close and in-app links, not the

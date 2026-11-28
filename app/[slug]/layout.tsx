@@ -1,7 +1,9 @@
 import { Suspense } from "react";
 import { brand } from "@/config/brand";
 import { fill, t } from "@/lib/i18n";
+import { contrastRatio } from "@/lib/settings/contrast";
 import { getShopBySlug } from "@/lib/storefront/data";
+import type { StoreShop } from "@/lib/storefront/types";
 import { ShopHeader, ShopHeaderSkeleton } from "@/components/storefront/shop-header";
 
 /**
@@ -29,5 +31,32 @@ async function HeaderLoader({ params }: { params: LayoutProps<"/[slug]">["params
   const { slug } = await params;
   const shop = await getShopBySlug(slug);
   // Unknown shop: no header; the page itself shows the friendly 404.
-  return shop ? <ShopHeader shop={shop} /> : null;
+  return shop ? (
+    <>
+      <ShopColors shop={shop} />
+      <ShopHeader shop={shop} />
+    </>
+  ) : null;
+}
+
+const HEX = /^#[0-9A-Fa-f]{6}$/;
+
+/**
+ * The shop's own colors (Settings → Shop profile) replace the platform's
+ * on this shop's pages. Text on the main color is white or near-black,
+ * whichever is easier to read. Colors are checked (#RRGGBB) by the
+ * database and again here, so nothing else can get into the CSS.
+ */
+function ShopColors({ shop }: { shop: StoreShop }) {
+  const primary = shop.primaryColor && HEX.test(shop.primaryColor) ? shop.primaryColor : null;
+  const accent = shop.accentColor && HEX.test(shop.accentColor) ? shop.accentColor : null;
+  if (!primary && !accent) return null;
+
+  const vars: string[] = [];
+  if (primary) {
+    const onPrimary = (contrastRatio(primary, "#FFFFFF") ?? 21) >= (contrastRatio(primary, "#111111") ?? 0) ? "#FFFFFF" : "#111111";
+    vars.push(`--brand-primary: ${primary} !important;`, `--brand-on-primary: ${onPrimary} !important;`);
+  }
+  if (accent) vars.push(`--brand-accent: ${accent} !important;`);
+  return <style>{`html { ${vars.join(" ")} }`}</style>;
 }

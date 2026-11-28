@@ -30,6 +30,8 @@ export type StoreShop = {
   shareImageUrl: string | null; // link preview picture
   instagram: string | null;
   facebook: string | null;
+  primaryColor: string | null; // shop's own colors (null = platform colors)
+  accentColor: string | null;
 };
 
 export type StoreOptionValue = { id: string; value: string };
