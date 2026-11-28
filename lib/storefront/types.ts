@@ -1,3 +1,5 @@
+import type { PhotoFocus } from "@/components/photo/focused-photo";
+
 // Shapes of the public catalog data used by the storefront.
 // Safe to import from both server and client code.
 // Product-neutral: option types are named by the seller (Size, Flavor, Color…).
@@ -61,6 +63,7 @@ export type StoreProduct = {
   price: number;
   salePrice: number | null;
   photos: string[]; // full URLs, in order
+  photoFocus: PhotoFocus[]; // same order: what shows on 4:5 cards (seller's "Adjust")
   code: string | null;
   brand: string | null;
   weight: string | null;

@@ -1,6 +1,7 @@
 import "server-only";
 import { cache } from "react";
 import { createPublicClient } from "@/lib/supabase/public";
+import { DEFAULT_FOCUS } from "@/components/photo/focused-photo";
 import { photoUrl, shopAssetUrl } from "./photos";
 import type {
   DeliveryArea,
@@ -84,7 +85,7 @@ const PRODUCT_COLUMNS =
   "expiry_date, created_at, " +
   "product_option_types (id, name, position, product_option_values (id, value, position, created_at)), " +
   "product_variants (id, label, stock, price_override, sort_order, created_at, value1_id, value2_id), " +
-  "product_photos (storage_path, position, created_at)";
+  "product_photos (storage_path, position, created_at, focus_x, focus_y, zoom)";
 
 type ProductRow = {
   id: string;
@@ -115,7 +116,14 @@ type ProductRow = {
     value1_id: string | null;
     value2_id: string | null;
   }[];
-  product_photos: { storage_path: string; position: number; created_at: string }[];
+  product_photos: {
+    storage_path: string;
+    position: number;
+    created_at: string;
+    focus_x: number | string;
+    focus_y: number | string;
+    zoom: number | string;
+  }[];
 };
 
 const byPositionThenDate = (
@@ -164,10 +172,13 @@ function toProduct(row: ProductRow): StoreProduct {
     variants = variants.map((v) => ({ ...v, value1Id: `legacy-${v.id}`, value2Id: null }));
   }
 
-  const photos = [...(row.product_photos ?? [])]
-    .sort(byPositionThenDate)
-    .map((p) => photoUrl(p.storage_path));
-  if (photos.length === 0 && row.image_url) photos.push(row.image_url);
+  const sorted = [...(row.product_photos ?? [])].sort(byPositionThenDate);
+  const photos = sorted.map((p) => photoUrl(p.storage_path));
+  const photoFocus = sorted.map((p) => ({ x: Number(p.focus_x ?? 50), y: Number(p.focus_y ?? 50), zoom: Number(p.zoom ?? 1) }));
+  if (photos.length === 0 && row.image_url) {
+    photos.push(row.image_url);
+    photoFocus.push(DEFAULT_FOCUS);
+  }
 
   return {
     id: row.id,
@@ -176,6 +187,7 @@ function toProduct(row: ProductRow): StoreProduct {
     price: Number(row.price),
     salePrice: num(row.sale_price),
     photos,
+    photoFocus,
     code: row.code,
     brand: row.brand,
     weight: row.weight,

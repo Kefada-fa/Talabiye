@@ -105,7 +105,7 @@ async function ShopCatalog({ params }: { params: PageProps<"/[slug]">["params"] 
                   className="group flex h-full flex-col overflow-hidden rounded-2xl border border-zinc-200 bg-white transition-shadow hover:shadow-md"
                 >
                   <div className="relative">
-                    <ProductImage src={product.photos[0] ?? null} alt={product.name} className="aspect-square w-full" />
+                    <ProductImage src={product.photos[0] ?? null} focus={product.photoFocus[0]} alt={product.name} className="aspect-[4/5] w-full" />
                     {!available ? (
                       <span className="absolute left-2 top-2 rounded-full bg-zinc-900/80 px-2 py-0.5 text-xs font-medium text-white">
                         {t.product.soldOut}
@@ -148,7 +148,7 @@ function GridSkeleton() {
     <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4" aria-label={t.common.loading}>
       {Array.from({ length: 6 }).map((_, i) => (
         <li key={i} className="overflow-hidden rounded-2xl border border-zinc-200 bg-white">
-          <div className="aspect-square w-full animate-pulse bg-zinc-100" />
+          <div className="aspect-[4/5] w-full animate-pulse bg-zinc-100" />
           <div className="flex flex-col gap-2 p-3">
             <div className="h-4 w-3/4 animate-pulse rounded bg-zinc-100" />
             <div className="h-4 w-1/3 animate-pulse rounded bg-zinc-100" />

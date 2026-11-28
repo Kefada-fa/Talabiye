@@ -55,11 +55,11 @@ async function ProductDetails({ params }: { params: Props["params"] }) {
       </Link>
       <div className="grid gap-6 sm:grid-cols-2">
         <div className="flex flex-col gap-2">
-          <ProductImage src={product.photos[0] ?? null} alt={product.name} className="aspect-square w-full rounded-2xl" />
+          <ProductImage src={product.photos[0] ?? null} focus={product.photoFocus[0]} alt={product.name} className="aspect-[4/5] w-full rounded-2xl" />
           {product.photos.length > 1 && (
             <div className="grid grid-cols-4 gap-2">
               {product.photos.slice(1, 5).map((src, i) => (
-                <ProductImage key={src} src={src} alt={`${product.name} ${i + 2}`} className="aspect-square w-full rounded-xl" />
+                <ProductImage key={src} src={src} focus={product.photoFocus[i + 1]} alt={`${product.name} ${i + 2}`} className="aspect-[4/5] w-full rounded-xl" />
               ))}
             </div>
           )}

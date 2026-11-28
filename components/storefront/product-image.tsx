@@ -1,14 +1,18 @@
 import { t } from "@/lib/i18n";
+import { FocusedPhoto, type PhotoFocus } from "@/components/photo/focused-photo";
 
 /** A product photo, or a neutral placeholder when there is none. */
 export function ProductImage({
   src,
   alt,
   className = "",
+  focus,
 }: {
   src: string | null;
   alt: string;
   className?: string;
+  /** The seller's position + zoom (cards); without it the photo is centered. */
+  focus?: PhotoFocus;
 }) {
   if (!src) {
     return (
@@ -23,6 +27,10 @@ export function ProductImage({
         </svg>
       </div>
     );
+  }
+
+  if (focus) {
+    return <FocusedPhoto src={src} alt={alt} focus={focus} loading="lazy" className={`bg-zinc-100 ${className}`} />;
   }
 
   return (
