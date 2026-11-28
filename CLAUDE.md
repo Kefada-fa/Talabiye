@@ -161,7 +161,15 @@ FEATURES only, never for product rules.**
   last choice in the `bo_shop` cookie (only set if the user is a member).
   All reads use the user's own session (RLS) — never the secret key.
 - Home numbers: `shop_dashboard_summary(shop_id)` (security invoker, refuses
-  non-members). The unconfirmed badge refreshes on every page change and
+  non-members). "This month" = calendar month in **Asia/Beirut** time;
+  month sales = paid + pending, **subtotal − discount** (no delivery fee, no
+  extra fees).
+- The `bo_shop` cookie is only a preference: the server loads the user's
+  memberships on every request and the cookie can only pick one of them.
+- Reserved shop addresses: every top-level route (dashboard, login, logout,
+  forgot-password, reset-password, auth, api, health, admin, settings,
+  signup, www, app, help, terms, privacy, cart, checkout…). Any new
+  top-level route → add it to the reserved list in a migration + the test. The unconfirmed badge refreshes on every page change and
   every 60 s (`getUnconfirmedCountAction`).
 - Phone (< 768px): top bar + bottom tabs (Home, Invoices, Inventory,
   Customers, More). Computer: dark sidebar.

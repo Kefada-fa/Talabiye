@@ -62,6 +62,10 @@ export const getDashboardContext = cache(async (): Promise<DashboardContext> => 
     .filter((s): s is MyShop => s !== null)
     .sort((a, b) => a.name.localeCompare(b.name));
 
+  // The cookie is only a PREFERENCE, never trusted on its own: `shops` was
+  // just loaded from the database for THIS user (their memberships), and
+  // the cookie can only pick one of those. A shop they're not (or no
+  // longer) a member of is ignored → fall back to their first shop.
   const chosen = (await cookies()).get(CURRENT_SHOP_COOKIE)?.value;
   const current = shops.find((s) => s.id === chosen) ?? shops[0] ?? null;
 

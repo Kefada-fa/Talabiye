@@ -228,6 +228,34 @@ begin
 end;
 $f$;
 
+-- Tries to create a shop with each address; returns the ones that were
+-- NOT refused (should be none for reserved words).
+create or replace function pg_temp.unblocked_slugs(p_words text[])
+returns text[]
+language plpgsql
+as $f$
+declare
+  w text;
+  v_open text[] := '{}';
+begin
+  foreach w in array p_words loop
+    begin
+      insert into public.shops (name, slug) values ('Reserved test', w);
+      v_open := v_open || w;   -- it was allowed: bad
+    exception when check_violation then
+      null;                    -- refused: good
+    end;
+  end loop;
+  return v_open;
+end;
+$f$;
+
+-- First moment of the current month in Beirut.
+create or replace function pg_temp.beirut_month_start()
+returns timestamptz
+language sql
+as $f$ select date_trunc('month', now() at time zone 'Asia/Beirut') at time zone 'Asia/Beirut' $f$;
+
 -- Moves the most recent order to "paid" (as admin).
 create or replace function pg_temp.pay_last_order()
 returns void
@@ -1183,7 +1211,39 @@ insert into sec_results (who, test, result) values
     format('select * from public.shop_dashboard_summary(%L)', (select id from public.shops where slug = 'kefada-demo')), 'denied')),
 ('database', 'shop address "forgot-password" is reserved',
   pg_temp.sec_check(null, null,
-    $q$insert into public.shops (name, slug) values ('X', 'forgot-password')$q$, 'error', 'shops_slug_not_reserved_step7'));
+    $q$insert into public.shops (name, slug) values ('X', 'forgot-password')$q$, 'error', 'shops_slug_not_reserved_step7')),
+('database', 'every system address is reserved for shops',
+  pg_temp.sec_check(null, null,
+    $q$select w from unnest(pg_temp.unblocked_slugs(array[
+       'dashboard', 'login', 'logout', 'forgot-password', 'reset-password', 'auth', 'api', 'health',
+       'admin', 'settings', 'signup', 'www', 'app', 'help', 'terms', 'privacy'])) as w$q$, 'empty')),
+('owner', 'month sales = subtotal − discount (no delivery, no extra fees)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    format($q$select 1 from public.shop_dashboard_summary(%L) where month_orders = 1 and month_sales = 20$q$,
+           (select id from public.shops where slug = 'kefada-demo')), 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner');
+      select pg_temp.demo_order();
+      update public.orders
+         set status = 'pending', discount = 5,
+             extra_fees = '[{"label": "Exchange fee", "amount": 2}]'::jsonb,
+             total = subtotal - 5 + delivery_fee + 2
+       where id = pg_temp.last_order_id()$q$)),
+('owner', '"this month" starts at midnight BEIRUT time (order 30 min after counts)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    format($q$select 1 from public.shop_dashboard_summary(%L) where month_orders = 1$q$,
+           (select id from public.shops where slug = 'kefada-demo')), 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner');
+      select pg_temp.demo_order();
+      update public.orders set status = 'pending', created_at = pg_temp.beirut_month_start() + interval '30 minutes'
+       where id = pg_temp.last_order_id()$q$)),
+('owner', '"this month": order 30 min before Beirut midnight is last month',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    format($q$select 1 from public.shop_dashboard_summary(%L) where month_orders = 0 and pending_count = 1$q$,
+           (select id from public.shops where slug = 'kefada-demo')), 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner');
+      select pg_temp.demo_order();
+      update public.orders set status = 'pending', created_at = pg_temp.beirut_month_start() - interval '30 minutes'
+       where id = pg_temp.last_order_id()$q$));
 
 -- =====================================================================
 -- G. CONFIGURATION checks (run as admin; each must find 0 problems)

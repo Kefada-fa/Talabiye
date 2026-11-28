@@ -245,7 +245,7 @@ export const en = {
       pendingHint: "{amount} to collect",
       month: "This month",
       monthOrders: "{count} orders",
-      monthHint: "{amount} in sales (paid + pending, without delivery)",
+      monthHint: "{amount} in sales (paid + pending, without delivery or extra fees)",
       laterTitle: "More coming soon",
       laterText: "Balance & profit, best sellers and charts come in a later step.",
     },
