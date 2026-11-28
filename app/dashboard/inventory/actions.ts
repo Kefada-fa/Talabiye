@@ -7,6 +7,7 @@ import { createClient } from "@/lib/supabase/server";
 import { PRODUCT_PHOTOS_BUCKET } from "@/lib/storefront/photos";
 import { validatePayload } from "@/lib/inventory/form";
 import type { ActionResult } from "@/lib/inventory/types";
+import type { PhotoFocus } from "@/components/photo/focused-photo";
 
 /*
  * Every action finds the CURRENT shop on the server (never trusts a shop id
@@ -135,8 +136,26 @@ export async function changeStockAction(
 }
 
 // ----------------------------------------------------------------- photos
-/** Saves photo rows for files the browser just uploaded (in order). */
-export async function addPhotosAction(productId: string, paths: string[]): Promise<ActionResult<{ photos: { id: string; path: string }[] }>> {
+/** Focus 0–100 %, zoom 1–3 (the database checks the same limits). */
+function validFocus(f: unknown): f is PhotoFocus {
+  if (!f || typeof f !== "object") return false;
+  const { x, y, zoom } = f as Record<string, unknown>;
+  const n = (v: unknown, lo: number, hi: number) => typeof v === "number" && Number.isFinite(v) && v >= lo && v <= hi;
+  return n(x, 0, 100) && n(y, 0, 100) && n(zoom, 1, 3);
+}
+const focusColumns = (f: PhotoFocus) => ({
+  focus_x: Math.round(f.x * 100) / 100,
+  focus_y: Math.round(f.y * 100) / 100,
+  zoom: Math.round(f.zoom * 1000) / 1000,
+});
+
+/** Saves photo rows for files the browser just uploaded (in order), with
+ *  each photo's position on cards (optional; default = center, 100%). */
+export async function addPhotosAction(
+  productId: string,
+  paths: string[],
+  focuses?: (PhotoFocus | null)[],
+): Promise<ActionResult<{ photos: { id: string; path: string }[] }>> {
   const m = await requireMember();
   if (!m || !(await ownProduct(m, productId))) return fail(f.errors.notFound);
   const re = new RegExp(`^${m.shopId}/${productId}/[A-Za-z0-9-]{1,64}\\.(webp|jpg|png)$`);
@@ -150,8 +169,17 @@ export async function addPhotosAction(productId: string, paths: string[]): Promi
     .order("position", { ascending: false })
     .limit(1)
     .maybeSingle();
+  if (focuses !== undefined && (!Array.isArray(focuses) || focuses.length !== paths.length || !focuses.every((f) => f === null || validFocus(f)))) {
+    return fail(f.errors.generic);
+  }
   let position = Number(last?.position ?? -1);
-  const rows = paths.map((path) => ({ shop_id: m.shopId, product_id: productId, storage_path: path, position: ++position }));
+  const rows = paths.map((path, i) => ({
+    shop_id: m.shopId,
+    product_id: productId,
+    storage_path: path,
+    position: ++position,
+    ...(focuses?.[i] ? focusColumns(focuses[i] as PhotoFocus) : {}),
+  }));
   const { data, error } = await m.supabase.from("product_photos").insert(rows).select("id, storage_path");
   if (error) return dbError(error); // e.g. "An item can have at most 10 photos"
   refresh();
@@ -176,6 +204,23 @@ export async function removePhotoAction(photoId: string): Promise<ActionResult> 
     const { data: used } = await m.supabase.from("order_items").select("id").eq("photo", path).limit(1);
     if (!used || used.length === 0) await m.supabase.storage.from(PRODUCT_PHOTOS_BUCKET).remove([path]);
   }
+  refresh();
+  return { ok: true };
+}
+
+/** What shows of a photo on 4:5 cards (members; the file is never changed). */
+export async function setPhotoFocusAction(photoId: string, focus: PhotoFocus): Promise<ActionResult> {
+  const m = await requireMember();
+  if (!m || !UUID_RE.test(String(photoId))) return fail(f.errors.notFound);
+  if (!validFocus(focus)) return fail(f.errors.generic);
+  const { data, error } = await m.supabase
+    .from("product_photos")
+    .update(focusColumns(focus))
+    .eq("id", photoId)
+    .eq("shop_id", m.shopId)
+    .select("id");
+  if (error) return dbError(error);
+  if (!data || data.length === 0) return fail(f.errors.notFound);
   refresh();
   return { ok: true };
 }

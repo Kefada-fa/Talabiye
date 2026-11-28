@@ -9,6 +9,7 @@ import {
   setValuePhotosAction,
   setVisibilityAction,
   addPhotosAction,
+  setPhotoFocusAction,
 } from "@/app/dashboard/inventory/actions";
 import { formatPrice } from "@/lib/format";
 import { fill, t } from "@/lib/i18n";
@@ -36,7 +37,10 @@ import {
   Toggle,
 } from "@/components/backoffice/settings/kit";
 import { OptionsEditor, StockGrid, type PhotoChoice } from "./options-editor";
-import { PhotosEditor, prepareOne, type PendingPhoto } from "./photos-editor";
+import { DEFAULT_FOCUS, type PhotoFocus } from "@/components/photo/focused-photo";
+import { AdjustPhotoDialog } from "./adjust-photo";
+import { PhotoViewer } from "./photo-viewer";
+import { PhotosEditor, prepareOne, shownPhotos, type PendingPhoto } from "./photos-editor";
 import { QuickStock } from "./quick-stock";
 
 const inv = t.backoffice.inventory;
@@ -86,6 +90,10 @@ export function ItemEditor({
   const [newCategory, setNewCategory] = useState("");
   const [moreOpen, setMoreOpen] = useState(!!(initial.brand || initial.expiryDate || initial.barcode || initial.weight));
   const [deleting, setDeleting] = useState(false);
+  // Photos waiting for "Adjust" (after adding them), and the full view.
+  const [adjustQueue, setAdjustQueue] = useState<{ keys: string[]; total: number }>({ keys: [], total: 0 });
+  const [adjustSaving, setAdjustSaving] = useState(false);
+  const [viewIndex, setViewIndex] = useState<number | null>(null);
   const [busy, startTransition] = useTransition();
 
   const isNew = form.isNew;
@@ -120,7 +128,8 @@ export function ItemEditor({
         let ref: ItemForm["types"][number]["values"][number]["photo"];
         if (isNew) {
           const localId = crypto.randomUUID();
-          setPending((old) => [...old, { localId, image }]);
+          setPending((old) => [...old, { localId, image, focus: DEFAULT_FOCUS }]);
+          setAdjustQueue({ keys: [localId], total: 1 });
           ref = { kind: "pending", localId };
         } else {
           const paths = await uploadProductPhotos(data.shopId, form.id, [image]);
@@ -130,8 +139,9 @@ export function ItemEditor({
             setError(res.error);
             return;
           }
-          const saved = { id: res.photos[0].id, path: paths[0], url: image.url };
+          const saved = { id: res.photos[0].id, path: paths[0], url: image.url, focus: DEFAULT_FOCUS };
           setPhotos((old) => [...old, saved]);
+          setAdjustQueue({ keys: [saved.id], total: 1 });
           ref = { kind: "saved", id: saved.id };
         }
         setFormState((cur) => ({
@@ -143,6 +153,32 @@ export function ItemEditor({
       } catch (e) {
         setError(e instanceof ImageError ? e.message : t.backoffice.settings.image.uploadFailed);
       }
+    });
+  }
+
+  // ---- photo position (Adjust) ----
+  const shown = shownPhotos(isNew, photos, pending);
+  const adjustKey = adjustQueue.keys[0];
+  const adjusting = adjustKey ? shown.find((p) => p.key === adjustKey) : undefined;
+  const nextAdjust = () => setAdjustQueue((q) => ({ keys: q.keys.slice(1), total: q.keys.length > 1 ? q.total : 0 }));
+
+  function saveFocus(key: string, focus: PhotoFocus) {
+    if (isNew) {
+      // Saved with the photo when the item is saved.
+      setPending((old) => old.map((p) => (p.localId === key ? { ...p, focus } : p)));
+      nextAdjust();
+      return;
+    }
+    setAdjustSaving(true);
+    startTransition(async () => {
+      const res = await setPhotoFocusAction(key, focus);
+      setAdjustSaving(false);
+      if (!res.ok) {
+        setError(res.error);
+        return;
+      }
+      setPhotos((old) => old.map((p) => (p.id === key ? { ...p, focus } : p)));
+      nextAdjust();
     });
   }
 
@@ -188,7 +224,7 @@ export function ItemEditor({
         let paths: string[] = [];
         try {
           paths = await uploadProductPhotos(data.shopId, res.productId, pending.map((p) => p.image));
-          const added = await addPhotosAction(res.productId, paths);
+          const added = await addPhotosAction(res.productId, paths, pending.map((p) => p.focus));
           if (!added.ok) throw new Error(added.error);
           const idByPath = new Map(added.photos.map((p) => [p.path, p.id]));
           const idByLocal = new Map(pending.map((p, i) => [p.localId, idByPath.get(paths[i]) ?? null]));
@@ -410,8 +446,30 @@ export function ItemEditor({
           pending={pending}
           onPending={setPending}
           onSavedChange={setPhotos}
+          onAdded={(keys) => setAdjustQueue({ keys, total: keys.length })}
+          onAdjust={(key) => setAdjustQueue({ keys: [key], total: 1 })}
+          onView={setViewIndex}
           max={data.maxPhotos}
         />
+        {adjusting && (
+          <AdjustPhotoDialog
+            key={adjusting.key}
+            src={adjusting.url}
+            initial={adjusting.focus}
+            step={{ n: adjustQueue.total - adjustQueue.keys.length + 1, of: adjustQueue.total }}
+            saving={adjustSaving}
+            onSave={(focus) => saveFocus(adjusting.key, focus)}
+            onSkip={adjustQueue.total > 1 ? nextAdjust : undefined}
+            onCancel={() => setAdjustQueue({ keys: [], total: 0 })}
+          />
+        )}
+        {viewIndex !== null && shown.length > 0 && (
+          <PhotoViewer
+            photos={shown.map((p, i) => ({ url: p.url, alt: fill(inv.photos.alt, { n: i + 1 }) }))}
+            start={Math.min(viewIndex, shown.length - 1)}
+            onClose={() => setViewIndex(null)}
+          />
+        )}
       </Card>
 
       {/* ---------- Options + stock ---------- */}

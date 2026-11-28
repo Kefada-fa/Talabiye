@@ -2191,6 +2191,45 @@ insert into sec_results (who, test, result) values
          'variant_id', null, 'quantity', 1, 'expected_price', 'cheap')))$q$, 'error', 'Invalid item in cart'));
 
 -- =====================================================================
+-- O. PHOTO POSITION ON CARDS (Step 9b): focus 0–100, zoom 1–3, members only
+-- =====================================================================
+insert into sec_results (who, test, result) values
+('database', 'a new photo is centered at 100% (50 / 50 / 1)',
+  pg_temp.sec_check(null, null,
+    pg_temp.photo_row('photo-1') || $q$; select 1 from public.product_photos
+       where storage_path like '%/photo-1.webp' and focus_x = 50 and focus_y = 50 and zoom = 1$q$, 'rows')),
+('staff', 'staff CAN set a photo''s position and zoom (control)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    $q$update public.product_photos set focus_x = 20, focus_y = 80, zoom = 2.5$q$, 'rows',
+    p_setup => pg_temp.photo_row('photo-1') || $q$; select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('validation', 'focus over 100% refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    $q$update public.product_photos set focus_x = 101$q$, 'error', 'product_photos_focus_x_range',
+    p_setup => pg_temp.photo_row('photo-1') || $q$; select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('validation', 'focus below 0% refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    $q$update public.product_photos set focus_y = -1$q$, 'error', 'product_photos_focus_y_range',
+    p_setup => pg_temp.photo_row('photo-1') || $q$; select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('validation', 'zoom over 300% refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    $q$update public.product_photos set zoom = 3.5$q$, 'error', 'product_photos_zoom_range',
+    p_setup => pg_temp.photo_row('photo-1') || $q$; select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('validation', 'zoom below 100% refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    $q$update public.product_photos set zoom = 0.5$q$, 'error', 'product_photos_zoom_range',
+    p_setup => pg_temp.photo_row('photo-1') || $q$; select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('other owner', 'change the photo position of ANOTHER shop''s item',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000004',
+    $q$update public.product_photos set focus_x = 0, zoom = 3$q$, 'empty',
+    p_setup => pg_temp.photo_row('photo-1') || $q$; select pg_temp.add_other_shop_owner()$q$)),
+('anon', 'change a photo position',
+  pg_temp.sec_check('anon', null, $q$update public.product_photos set focus_x = 0$q$, 'denied',
+    p_setup => pg_temp.photo_row('photo-1'))),
+('anon', 'CAN read a visible item''s photo position (shop cards, control)',
+  pg_temp.sec_check('anon', null, $q$select focus_x, focus_y, zoom from public.product_photos$q$, 'rows',
+    p_setup => pg_temp.photo_row('photo-1')));
+
+-- =====================================================================
 -- G. CONFIGURATION checks (run as admin; each must find 0 problems)
 -- =====================================================================
 insert into sec_results (who, test, result) values

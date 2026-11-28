@@ -8,6 +8,7 @@ import { expiryState, stockStatus, stockTotals, stockValue } from "@/lib/invento
 import type { InvItem, InventoryData } from "@/lib/inventory/types";
 import { inputClass, primaryButton, secondaryButton } from "@/components/backoffice/settings/kit";
 import { CloseIcon } from "@/components/backoffice/icons";
+import { FocusedPhoto } from "@/components/photo/focused-photo";
 import { QuickStock } from "./quick-stock";
 
 const inv = t.backoffice.inventory;
@@ -221,10 +222,16 @@ function ItemCard({ item, data, onQuick }: { item: InvItem; data: InventoryData;
   return (
     <li className="flex flex-col overflow-hidden rounded-bo-card border border-bo-border bg-bo-card">
       <Link href={`/dashboard/inventory/${item.id}`} className="group flex flex-1 flex-col">
-        <div className="relative aspect-square bg-bo-page">
+        <div className="relative aspect-[4/5] bg-bo-page">
           {item.photos[0] ? (
-            // eslint-disable-next-line @next/next/no-img-element -- storage URL
-            <img src={item.photos[0].url} alt="" loading="lazy" className={`h-full w-full object-cover ${item.isActive ? "" : "opacity-60"}`} />
+            <FocusedPhoto
+              src={item.photos[0].url}
+              alt=""
+              loading="lazy"
+              focus={item.photos[0].focus}
+              className="h-full w-full"
+              imgClassName={item.isActive ? "" : "opacity-60"}
+            />
           ) : (
             <span className="flex h-full items-center justify-center text-xs text-bo-muted">{t.product.noPhoto}</span>
           )}

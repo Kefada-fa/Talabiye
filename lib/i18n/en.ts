@@ -473,6 +473,29 @@ export const en = {
         hint: "JPG, PNG or WebP. We make them smaller (1200 px) before uploading.",
       },
 
+      adjust: {
+        title: "Adjust photo",
+        hint: "Drag the photo to choose what shows on the card. The photo itself is not cut.",
+        step: "Photo {n} of {of}",
+        zoom: "Zoom",
+        reset: "Reset",
+        save: "Save position",
+        skip: "Skip",
+        cancel: "Close",
+        button: "Adjust",
+        buttonFor: "Adjust photo {n}",
+      },
+
+      viewer: {
+        title: "Photo",
+        counter: "{n} / {of}",
+        close: "Close",
+        previous: "Previous photo",
+        next: "Next photo",
+        open: "Open photo {n} full screen",
+        hint: "Swipe or use the arrows · pinch or double-tap to zoom",
+      },
+
       buyers: {
         title: "Who bought it",
         intro: "Orders that contain this item (cancelled orders are not shown).",

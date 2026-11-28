@@ -1,7 +1,10 @@
 // Shapes of the inventory data. Safe for client code.
 // Product-neutral: option types are named by the seller.
 
-export type InvPhoto = { id: string; path: string; url: string };
+import type { PhotoFocus } from "@/components/photo/focused-photo";
+
+/** A saved photo; focus = what shows on 4:5 cards (never crops the file). */
+export type InvPhoto = { id: string; path: string; url: string; focus: PhotoFocus };
 
 export type InvValue = { id: string; value: string; photoId: string | null };
 export type InvType = { id: string; name: string; position: 1 | 2; values: InvValue[] };

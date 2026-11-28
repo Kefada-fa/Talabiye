@@ -265,6 +265,15 @@ FEATURES only, never for product rules.**
     platform-only: shops can read, never change it or their plan). New items:
     photos upload after the item is saved; failures delete the uploaded files.
     `product_option_values.photo_id` = photo per option value (Step 10 shows it).
+  - **Photo position on cards** (Step 9b): cards are **4:5 portrait**.
+    `product_photos.focus_x / focus_y` (0–100 %, default 50) + `zoom` (1–3,
+    default 1) = what shows; the file is never cropped. ALWAYS draw product
+    photos on cards with `FocusedPhoto` (`components/photo/focused-photo.tsx`,
+    shared by back office + shop page). "Adjust" frame
+    (`components/backoffice/inventory/adjust-photo.tsx`) opens after adding
+    photos and from each photo's Adjust button; saved by
+    `setPhotoFocusAction` (members). Full view: `photo-viewer.tsx`
+    (whole photo, swipe/arrows, pinch/double-tap zoom, X/Esc/Back).
 - Making someone a shop owner (until shop sign-up exists):
   `supabase/snippets/make_shop_owner.sql` (email typed there, never in code).
   Re-running `seed.sql` removes the demo shop's members → run it again.

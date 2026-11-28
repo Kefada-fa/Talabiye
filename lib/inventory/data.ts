@@ -9,7 +9,7 @@ const num = (v: unknown): number | null => (v === null || v === undefined ? null
 const ITEM_COLUMNS =
   "id, name, code, description, price, sale_price, collection, categories, is_active, brand, expiry_date, " +
   "barcode, weight, stock, created_at, " +
-  "product_photos (id, storage_path, position, created_at), " +
+  "product_photos (id, storage_path, position, created_at, focus_x, focus_y, zoom), " +
   "product_option_types (id, name, position, product_option_values (id, value, position, photo_id)), " +
   "product_variants (id, value1_id, value2_id, label, stock, price_override, sort_order)";
 
@@ -29,7 +29,15 @@ type Row = {
   weight: string | null;
   stock: number | null;
   created_at: string;
-  product_photos: { id: string; storage_path: string; position: number; created_at: string }[];
+  product_photos: {
+    id: string;
+    storage_path: string;
+    position: number;
+    created_at: string;
+    focus_x: number | string;
+    focus_y: number | string;
+    zoom: number | string;
+  }[];
   product_option_types: {
     id: string;
     name: string;
@@ -66,7 +74,12 @@ function toItem(r: Row, costs: Map<string, number>): InvItem {
     createdAt: r.created_at,
     photos: [...(r.product_photos ?? [])]
       .sort((a, b) => a.position - b.position || a.created_at.localeCompare(b.created_at))
-      .map((p) => ({ id: p.id, path: p.storage_path, url: photoUrl(p.storage_path) })),
+      .map((p) => ({
+        id: p.id,
+        path: p.storage_path,
+        url: photoUrl(p.storage_path),
+        focus: { x: Number(p.focus_x ?? 50), y: Number(p.focus_y ?? 50), zoom: Number(p.zoom ?? 1) },
+      })),
     types: [...(r.product_option_types ?? [])]
       .sort((a, b) => a.position - b.position)
       .slice(0, 2)
