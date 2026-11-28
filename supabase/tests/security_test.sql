@@ -350,6 +350,69 @@ as $f$
       'variant_id', null, 'quantity', 4)))
 $f$;
 
+-- ---- Inventory helpers (Step 9) ----
+-- SQL text: save_product for the demo shop (p_product = 'null' or a quoted id).
+create or replace function pg_temp.save_call(p_product text, p_json text)
+returns text
+language sql
+as $f$
+  select format($s$select public.save_product((select id from public.shops where slug = 'kefada-demo'), %s, %L::jsonb)$s$,
+    p_product, p_json)
+$f$;
+
+-- '<id>'::uuid of a demo product, for save_call.
+create or replace function pg_temp.quoted_product(p_name text)
+returns text
+language sql
+as $f$ select quote_literal((select id from public.products where name = p_name)) || '::uuid' $f$;
+
+-- A 2 × 2 item: Color (Red, Blue) × Size (S, M); Blue/S not tracked, Blue/M own price.
+create or replace function pg_temp.socks_json()
+returns text
+language sql
+as $f$ select '{"name": "Socks", "price": 5, "types": [
+  {"name": "Color", "values": [{"key": "r", "value": "Red"}, {"key": "b", "value": "Blue"}]},
+  {"name": "Size", "values": [{"key": "s", "value": "S"}, {"key": "m", "value": "M"}]}],
+  "variants": [{"v1": "r", "v2": "s", "stock": 1}, {"v1": "r", "v2": "m", "stock": 2},
+               {"v1": "b", "v2": "s", "stock": null}, {"v1": "b", "v2": "m", "stock": 0, "price": 7}]}' $f$;
+
+-- The demo Whey Protein as save_product data (existing ids), with Chocolate renamed.
+create or replace function pg_temp.whey_json(p_new_name text)
+returns text
+language sql
+as $f$
+  select jsonb_build_object(
+    'name', p.name, 'price', p.price,
+    'types', jsonb_build_array(jsonb_build_object('id', t.id, 'name', t.name, 'values',
+      (select jsonb_agg(jsonb_build_object('key', v.id, 'id', v.id,
+                'value', case when v.value = 'Chocolate' then p_new_name else v.value end) order by v.position)
+       from public.product_option_values v where v.option_type_id = t.id))),
+    'variants', (select jsonb_agg(jsonb_build_object('v1', pv.value1_id, 'stock', pv.stock, 'price', pv.price_override))
+                 from public.product_variants pv where pv.product_id = p.id))::text
+  from public.products p join public.product_option_types t on t.product_id = p.id and t.position = 1
+  where p.name = 'Whey Protein 1kg'
+$f$;
+
+-- SQL text: a photo row for the Building Blocks Set.
+create or replace function pg_temp.photo_row(p_file text)
+returns text
+language sql
+as $f$
+  select format($s$insert into public.product_photos (shop_id, product_id, storage_path) values (%L, %L, %L)$s$,
+    p.shop_id, p.id, p.shop_id || '/' || p.id || '/' || p_file || '.webp')
+  from public.products p where p.name = 'Building Blocks Set'
+$f$;
+
+-- SQL text: a file in the product-photos bucket, in a demo item's folder.
+create or replace function pg_temp.photo_file(p_product text, p_file text)
+returns text
+language sql
+as $f$
+  select format($s$insert into storage.objects (bucket_id, name) values ('product-photos', %L)$s$,
+    p.shop_id || '/' || p.id || '/' || p_file)
+  from public.products p where p.name = p_product
+$f$;
+
 -- Ids used below:
 --   00000000-0000-4000-8000-000000000001  logged-in user, member of NO shop
 --   00000000-0000-4000-8000-000000000002  temporary user, member of the demo shop
@@ -428,7 +491,7 @@ insert into sec_results (who, test, result) values
   pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001', 'select confirm_token from public.orders', 'empty',
     p_setup => $q$select pg_temp.demo_order()$q$)),
 ('non-member', 'read order_items',
-  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001', 'select * from public.order_items', 'empty',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001', 'select id, name, quantity from public.order_items', 'empty',
     p_setup => $q$select pg_temp.demo_order()$q$)),
 ('non-member', 'read shop_members',
   pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001', 'select * from public.shop_members', 'empty')),
@@ -867,11 +930,11 @@ insert into sec_results (who, test, result) values
 ('anon', 'CAN see photos of a visible product (control)',
   pg_temp.sec_check('anon', null, 'select * from public.product_photos', 'rows',
     p_setup => $q$insert into public.product_photos (shop_id, product_id, storage_path)
-      select shop_id, id, 'demo/photo.jpg' from public.products where name = 'Building Blocks Set'$q$)),
+      select shop_id, id, shop_id || '/' || id || '/photo-1.webp' from public.products where name = 'Building Blocks Set'$q$)),
 ('anon', 'see photos of a HIDDEN product',
   pg_temp.sec_check('anon', null, 'select * from public.product_photos', 'empty',
     p_setup => $q$insert into public.product_photos (shop_id, product_id, storage_path)
-      select shop_id, id, 'demo/photo.jpg' from public.products where name = 'Building Blocks Set';
+      select shop_id, id, shop_id || '/' || id || '/photo-1.webp' from public.products where name = 'Building Blocks Set';
       update public.products set is_active = false where name = 'Building Blocks Set'$q$)),
 ('anon', 'see option types of a HIDDEN product',
   pg_temp.sec_check('anon', null, format('select * from public.product_option_types where product_id = %L',
@@ -910,8 +973,8 @@ insert into sec_results (who, test, result) values
 ('non-member', 'change the invoice prefix',
   pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000001', $q$update public.shop_private_settings set invoice_prefix = 'HACK'$q$, 'empty')),
 -- staff / owner
-('staff', 'staff CAN read product costs (control)',
-  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003', 'select * from public.product_costs', 'rows',
+('staff', 'staff can NOT read product costs (owners only, Step 9)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003', 'select * from public.product_costs', 'empty',
     p_setup => $q$insert into auth.users (id) values ('00000000-0000-4000-8000-000000000003');
       insert into public.shop_members (shop_id, user_id, role)
       select id, '00000000-0000-4000-8000-000000000003', 'staff' from public.shops where slug = 'kefada-demo'$q$)),
@@ -1787,6 +1850,297 @@ insert into sec_results (who, test, result) values
     p_setup => $q$update public.shops set max_pieces = 30 where slug = 'kefada-demo'$q$));
 
 -- =====================================================================
+-- M. INVENTORY (Step 9): products, costs, options, photos, stock
+--   ...0002 = owner   ...0003 = staff   ...0004 = owner of ANOTHER shop
+-- =====================================================================
+insert into sec_results (who, test, result) values
+-- ---- who can do what ----
+('staff', 'staff CAN add an item (save_product)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    pg_temp.save_call('null', '{"name": "Test item", "price": 10, "stock": 3}')
+    || $q$; select 1 from public.products where name = 'Test item' and stock = 3$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('staff', 'staff CAN edit an item',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    $q$update public.products set name = 'Blocks 2' where name = 'Building Blocks Set'$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('staff', 'staff delete an item',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    $q$delete from public.products where name = 'Building Blocks Set'$q$, 'empty',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('owner', 'owner CAN delete an item; its order lines keep their copy',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$delete from public.products where name = 'Building Blocks Set';
+       select 1 from public.order_items
+        where name = 'Building Blocks Set' and product_id is null and unit_price = 25 and quantity = 1$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner');
+      select pg_temp.demo_order()$q$)),
+('staff', 'staff read the cost column of order lines',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    $q$select cost from public.order_items$q$, 'denied',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff'); select pg_temp.demo_order()$q$)),
+('staff', 'staff CAN read order lines without the cost (control)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    $q$select id, name, quantity, unit_price from public.order_items$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff'); select pg_temp.demo_order()$q$)),
+('owner', 'owner CAN read product costs (control)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$select * from public.product_costs$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('staff', 'staff change a cost directly',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    $q$update public.product_costs set wholesale_price = 0$q$, 'empty',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('staff', 'staff save an item WITH a wholesale price',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    pg_temp.save_call('null', '{"name": "Test item", "price": 10, "cost": 4}'), 'error', 'Only the shop owner',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('owner', 'owner CAN save an item with a wholesale price',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    pg_temp.save_call('null', '{"name": "Test item", "price": 10, "cost": 4}')
+    || $q$; select 1 from public.product_costs c join public.products p on p.id = c.product_id
+          where p.name = 'Test item' and c.wholesale_price = 4$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('other owner', 'add an item to ANOTHER shop',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000004',
+    pg_temp.save_call('null', '{"name": "Hacked", "price": 1}'), 'denied',
+    p_setup => $q$select pg_temp.add_other_shop_owner()$q$)),
+('other owner', 'edit ANOTHER shop''s item through my own shop',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000004',
+    format($q$select public.save_product((select id from public.shops where slug = 'other-test-shop'), %L,
+             '{"name": "Hacked", "price": 1}')$q$, (select id from public.products where name = 'Building Blocks Set')),
+    'error', 'Item not found',
+    p_setup => $q$select pg_temp.add_other_shop_owner()$q$)),
+('other owner', 'change ANOTHER shop''s stock (quick stock)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000004',
+    format('select public.change_stock(%L, null, 5, null)', (select id from public.products where name = 'Building Blocks Set')),
+    'denied', p_setup => $q$select pg_temp.add_other_shop_owner()$q$)),
+('anon', 'save an item',
+  pg_temp.sec_check('anon', null, pg_temp.save_call('null', '{"name": "x", "price": 1}'), 'denied')),
+('anon', 'change stock',
+  pg_temp.sec_check('anon', null,
+    format('select public.change_stock(%L, null, 5, null)', (select id from public.products where name = 'Building Blocks Set')),
+    'denied')),
+
+-- ---- item rules ----
+('validation', 'sale price must be lower than the price',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    pg_temp.save_call('null', '{"name": "Test item", "price": 10, "sale_price": 10}'), 'error', 'products_sale_price_check',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('validation', 'same item code twice in one shop refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    pg_temp.save_call('null', '{"name": "Test item", "price": 10, "code": "ts-1001"}'), 'error', 'products_shop_code_key',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('other owner', 'the same code in ANOTHER shop is fine (control)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000004',
+    $q$select public.save_product((select id from public.shops where slug = 'other-test-shop'), null,
+         '{"name": "Their tee", "price": 10, "code": "TS-1001"}');
+       select 1 from public.products where name = 'Their tee'$q$, 'rows',
+    p_setup => $q$select pg_temp.add_other_shop_owner()$q$)),
+('validation', 'a 3rd option type refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    pg_temp.save_call('null', '{"name": "Test item", "price": 10, "types": [
+       {"name": "A", "values": [{"key": "a", "value": "1"}]}, {"name": "B", "values": [{"key": "b", "value": "1"}]},
+       {"name": "C", "values": [{"key": "c", "value": "1"}]}], "variants": []}'), 'error', 'at most 2 option types',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('validation', 'negative stock refused (save)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    pg_temp.save_call('null', '{"name": "Test item", "price": 10, "stock": -1}'), 'error', 'negative',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('validation', 'negative stock refused (quick stock below 0)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    format('select public.change_stock(%L, %L, -1, null)',
+      (select id from public.products where name = 'Cotton T-Shirt'),
+      (select v.id from public.product_variants v join public.products p on p.id = v.product_id
+       where p.name = 'Cotton T-Shirt' and v.label = '6Y')), 'error', 'below 0',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('validation', 'negative stock refused (direct update)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    $q$update public.products set stock = -1 where name = 'Building Blocks Set'$q$, 'error', 'violates check constraint',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('staff', 'save an item with 2 option types (2 × 2 grid, own price)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    pg_temp.save_call('null', pg_temp.socks_json())
+    || $q$; select 1 from public.product_variants v join public.products p on p.id = v.product_id
+          where p.name = 'Socks'
+          having count(*) = 4 and count(*) filter (where v.stock is null) = 1
+             and count(*) filter (where v.price_override = 7) = 1
+             and count(*) filter (where v.label = 'Red / S' and v.stock = 1) = 1$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('validation', 'a missing combination refused (nothing saved)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    pg_temp.save_call('null', replace(pg_temp.socks_json(), ', {"v1": "b", "v2": "m", "stock": 0, "price": 7}', '')),
+    'error', 'Every option combination',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('staff', 'edit keeps option ids: renaming a flavor keeps its stock',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    pg_temp.save_call(pg_temp.quoted_product('Whey Protein 1kg'), pg_temp.whey_json('Dark Chocolate'))
+    || $q$; select 1 from public.product_variants v join public.products p on p.id = v.product_id
+          where p.name = 'Whey Protein 1kg' and v.label = 'Dark Chocolate' and v.stock = 10$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('staff', 'untouched stock box keeps an order placed meanwhile (base 4, now 3)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    pg_temp.save_call(pg_temp.quoted_product('Building Blocks Set'),
+      '{"name": "Building Blocks Set", "price": 25, "stock": 4, "stock_base": 4}')
+    || $q$; select 1 from public.products where name = 'Building Blocks Set' and stock = 3$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff'); select pg_temp.demo_order()$q$)),
+('staff', 'changed stock box that also changed meanwhile is refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    pg_temp.save_call(pg_temp.quoted_product('Building Blocks Set'),
+      '{"name": "Building Blocks Set", "price": 25, "stock": 10, "stock_base": 4}'), 'error', 'Stock changed while you were editing',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff'); select pg_temp.demo_order()$q$)),
+('staff', 'new category typed on the item page is added to the list',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    pg_temp.save_call('null', '{"name": "Test item", "price": 10, "categories": ["Babies"], "collection": "Spring"}')
+    || $q$; select 1 from public.shop_catalog_labels where name in ('Babies', 'Spring') having count(*) = 2$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+
+-- ---- photos ----
+('validation', 'an 11th photo refused (plan limit 10)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    pg_temp.photo_row('photo-11'), 'error', 'at most 10 photos',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff');
+      insert into public.product_photos (shop_id, product_id, storage_path, position)
+      select p.shop_id, p.id, p.shop_id || '/' || p.id || '/photo-' || g || '.webp', g
+      from public.products p, generate_series(1, 10) g where p.name = 'Building Blocks Set'$q$)),
+('staff', 'staff CAN add a photo row (control)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    pg_temp.photo_row('photo-1'), 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('validation', 'a photo path outside the item''s folder refused',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    $q$insert into public.product_photos (shop_id, product_id, storage_path)
+       select shop_id, id, '11111111-1111-4111-8111-111111111111/' || id || '/photo-1.webp'
+       from public.products where name = 'Building Blocks Set'$q$, 'error', 'product_photos_own_folder',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('config', 'bucket product-photos: public read, 300 KB, JPG/PNG/WebP only',
+  pg_temp.sec_check(null, null,
+    $q$select 1 from storage.buckets where id = 'product-photos' and public and file_size_limit = 307200
+       and allowed_mime_types @> array['image/jpeg', 'image/png', 'image/webp'] and cardinality(allowed_mime_types) = 3$q$, 'rows')),
+('staff', 'staff CAN upload a photo file into the item''s folder (control)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    pg_temp.photo_file('Building Blocks Set', 'abc123.webp'), 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('other owner', 'upload into ANOTHER shop''s item folder',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000004',
+    pg_temp.photo_file('Building Blocks Set', 'abc123.webp'), 'denied',
+    p_setup => $q$select pg_temp.add_other_shop_owner()$q$)),
+('staff', 'upload into a folder of an item that doesn''t exist',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    format($q$insert into storage.objects (bucket_id, name) values ('product-photos', %L)$q$,
+      (select id from public.shops where slug = 'kefada-demo') || '/11111111-1111-4111-8111-111111111111/abc.webp'), 'denied',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('anon', 'upload a product photo',
+  pg_temp.sec_check('anon', null, pg_temp.photo_file('Building Blocks Set', 'abc123.webp'), 'denied')),
+('other owner', 'delete ANOTHER shop''s product photo file',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000004',
+    $q$delete from storage.objects where bucket_id = 'product-photos'$q$, 'empty',
+    p_setup => pg_temp.photo_file('Building Blocks Set', 'abc123.webp') ||
+      $q$; select pg_temp.add_other_shop_owner(); select set_config('storage.allow_delete_query', 'true', true)$q$)),
+('staff', 'staff CAN delete their shop''s photo file (control)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    $q$delete from storage.objects where bucket_id = 'product-photos'$q$, 'rows',
+    p_setup => pg_temp.photo_file('Building Blocks Set', 'abc123.webp') ||
+      $q$; select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff');
+         select set_config('storage.allow_delete_query', 'true', true)$q$)),
+('other owner', 'link ANOTHER shop''s option values to photos',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000004',
+    format($q$select public.set_value_photos(%L, '{}')$q$, (select id from public.products where name = 'Kids Hoodie')),
+    'denied', p_setup => $q$select pg_temp.add_other_shop_owner()$q$)),
+
+-- ---- plan limits (platform only) ----
+('owner', 'CAN read the plan limits (control)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$select * from public.plan_limits where plan = 'free'$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('owner', 'owner raises the photo limit',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.plan_limits set max_product_photos = 50$q$, 'denied',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('owner', 'owner adds a plan',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$insert into public.plan_limits (plan, max_product_photos) values ('pro', 50)$q$, 'denied',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('owner', 'owner changes their own shop''s plan',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$update public.shops set plan = 'pro' where slug = 'kefada-demo'$q$, 'denied',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('anon', 'read the plan limits',
+  pg_temp.sec_check('anon', null, $q$select * from public.plan_limits$q$, 'denied')),
+
+-- ---- stock history ----
+('staff', 'quick stock is written to the history (who, +2, quick_stock)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    format('select public.change_stock(%L, null, 2, null)', (select id from public.products where name = 'Building Blocks Set'))
+    || $q$; select 1 from public.stock_changes
+          where reason = 'quick_stock' and stock_from = 4 and stock_to = 6 and change = 2
+            and user_id = '00000000-0000-4000-8000-000000000003'$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('staff', 'quick stock on a not-tracked value needs "start counting"',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    format('select public.change_stock(%L, null, 1, null)', (select id from public.products where name = 'Building Blocks Set')),
+    'error', 'not tracked',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff');
+      update public.products set stock = null where name = 'Building Blocks Set'$q$)),
+('staff', '"start counting" sets a not-tracked value to 0',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    format('select public.change_stock(%L, null, null, 0)', (select id from public.products where name = 'Building Blocks Set'))
+    || $q$; select 1 from public.products where name = 'Building Blocks Set' and stock = 0$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff');
+      update public.products set stock = null where name = 'Building Blocks Set'$q$)),
+('owner', 'an order writes "order placed" with its order number',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$select 1 from public.stock_changes
+        where reason = 'order_placed' and order_id = pg_temp.last_order_id() and change = -1 and user_id is null$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner'); select pg_temp.demo_order()$q$)),
+('owner', 'a cancelled order writes "order cancelled" (+1)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$select 1 from public.stock_changes where reason = 'order_cancelled' and change = 1$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner'); select pg_temp.demo_order();
+      update public.orders set status = 'cancelled', cancel_reason = 'Test' where id = pg_temp.last_order_id()$q$)),
+('owner', 'an edit writes "edit"',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    pg_temp.save_call(pg_temp.quoted_product('Building Blocks Set'), '{"name": "Building Blocks Set", "price": 25, "stock": 9}')
+    || $q$; select 1 from public.stock_changes where reason = 'edit' and stock_from = 4 and stock_to = 9$q$, 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner')$q$)),
+('staff', 'write to the stock history',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    $q$insert into public.stock_changes (shop_id, product_id, reason)
+       select shop_id, id, 'edit' from public.products where name = 'Building Blocks Set'$q$, 'denied',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff')$q$)),
+('owner', 'edit or delete the stock history',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    $q$delete from public.stock_changes$q$, 'denied',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner'); select pg_temp.demo_order()$q$)),
+('other owner', 'read ANOTHER shop''s stock history',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000004',
+    $q$select * from public.stock_changes$q$, 'empty',
+    p_setup => $q$select pg_temp.add_other_shop_owner(); select pg_temp.demo_order()$q$)),
+('anon', 'read the stock history',
+  pg_temp.sec_check('anon', null, $q$select * from public.stock_changes$q$, 'denied')),
+
+-- ---- who bought it ----
+('staff', 'who bought it: shows the order (control)',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000003',
+    format($q$select 1 from public.product_buyers(%L) where order_id = pg_temp.last_order_id() and quantity = 1$q$,
+      (select id from public.products where name = 'Building Blocks Set')), 'rows',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000003', 'staff'); select pg_temp.demo_order()$q$)),
+('owner', 'who bought it: cancelled orders are left out',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000002',
+    format('select * from public.product_buyers(%L)', (select id from public.products where name = 'Building Blocks Set')),
+    'empty',
+    p_setup => $q$select pg_temp.add_member('00000000-0000-4000-8000-000000000002', 'owner'); select pg_temp.demo_order();
+      update public.orders set status = 'cancelled', cancel_reason = 'Test' where id = pg_temp.last_order_id()$q$)),
+('other owner', 'who bought ANOTHER shop''s item',
+  pg_temp.sec_check('authenticated', '00000000-0000-4000-8000-000000000004',
+    format('select * from public.product_buyers(%L)', (select id from public.products where name = 'Building Blocks Set')),
+    'denied', p_setup => $q$select pg_temp.add_other_shop_owner(); select pg_temp.demo_order()$q$)),
+('anon', 'who bought an item',
+  pg_temp.sec_check('anon', null,
+    format('select * from public.product_buyers(%L)', (select id from public.products where name = 'Building Blocks Set')),
+    'denied'));
+
+-- =====================================================================
 -- G. CONFIGURATION checks (run as admin; each must find 0 problems)
 -- =====================================================================
 insert into sec_results (who, test, result) values
@@ -1814,7 +2168,8 @@ insert into sec_results (who, test, result) values
                              'confirm_order', 'mark_paid', 'cancel_order', 'mark_refused',
                              'shop_dashboard_summary',
                              'catalog_label_usage', 'rename_catalog_label', 'delete_catalog_label',
-                             'save_delivery_settings', 'save_option_presets')$q$, 'empty')),
+                             'save_delivery_settings', 'save_option_presets',
+                             'save_product', 'set_value_photos', 'change_stock', 'product_buyers')$q$, 'empty')),
 ('config', 'anon can run NO private function',
   pg_temp.sec_check(null, null, $q$select p.proname from pg_proc p
      where p.pronamespace = 'private'::regnamespace and has_function_privilege('anon', p.oid, 'EXECUTE')$q$, 'empty')),

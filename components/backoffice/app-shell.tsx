@@ -162,8 +162,8 @@ export function AppShell({
         <header className="sticky top-0 z-20 flex h-14 items-center justify-between gap-3 border-b border-bo-border bg-bo-card px-4 md:hidden">
           <h1 className="truncate font-bo-heading text-lg font-semibold">{titleFor(pathname)}</h1>
           <Link
-            href="/dashboard/invoices"
-            aria-label={nav.newInvoice}
+            href={pathname.startsWith("/dashboard/inventory") ? "/dashboard/inventory/new" : "/dashboard/invoices"}
+            aria-label={pathname.startsWith("/dashboard/inventory") ? t.backoffice.inventory.add : nav.newInvoice}
             className="flex h-11 w-11 items-center justify-center rounded-full bg-bo-accent text-white hover:bg-bo-accent-hover"
           >
             <PlusIcon className="h-6 w-6" />

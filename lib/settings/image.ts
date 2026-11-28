@@ -2,6 +2,7 @@
  * Browser-only: shrinks a picture before upload.
  *   - "logo":  fits inside 512 × 512 (keeps its shape)
  *   - "share": cropped to exactly 1200 × 630 (link previews)
+ *   - "product": fits inside 1200 × 1200 (product photos)
  * Output: WebP (JPEG if the browser can't make WebP), under 300 KB.
  */
 import { t } from "@/lib/i18n";
@@ -19,7 +20,7 @@ function toBlob(canvas: HTMLCanvasElement, type: string, quality: number): Promi
   return new Promise((resolve) => canvas.toBlob(resolve, type, quality));
 }
 
-export async function prepareImage(file: File, kind: "logo" | "share"): Promise<PreparedImage> {
+export async function prepareImage(file: File, kind: "logo" | "share" | "product"): Promise<PreparedImage> {
   const m = t.backoffice.settings.image;
   if (!ACCEPTED.includes(file.type)) throw new ImageError(m.badType);
   if (file.size > MAX_INPUT_BYTES) throw new ImageError(m.tooBig);
@@ -35,8 +36,8 @@ export async function prepareImage(file: File, kind: "logo" | "share"): Promise<
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new ImageError(m.cantRead);
 
-  if (kind === "logo") {
-    const scale = Math.min(1, 512 / Math.max(bitmap.width, bitmap.height));
+  if (kind === "logo" || kind === "product") {
+    const scale = Math.min(1, (kind === "logo" ? 512 : 1200) / Math.max(bitmap.width, bitmap.height));
     canvas.width = Math.max(1, Math.round(bitmap.width * scale));
     canvas.height = Math.max(1, Math.round(bitmap.height * scale));
     ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);

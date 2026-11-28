@@ -102,8 +102,12 @@ FEATURES only, never for product rules.**
   if missing, then locked).
 - Invoice numbers: `orders.display_number` = `<invoice_prefix>-0001`
   (prefix in `shop_private_settings`); `order_number` is the per-shop counter.
-- Private (members only, never public): `product_costs`,
-  `shop_private_settings`, `money_entries`, `order_history`.
+- **Costs are OWNERS ONLY** (Step 9): `product_costs` (RLS owners) and the
+  `order_items.cost` column (not granted to `authenticated` at all — use
+  explicit column lists, never `select *` on order_items; owners will get
+  costs via owner-only functions). Staff never see cost, profit or margin.
+- Private (members only, never public): `shop_private_settings`,
+  `money_entries`, `order_history`, `stock_changes`.
   Server only: `order_review_tokens`, `notification_outbox` writes.
 - Reviews: `submit_review()` (server only, with the order's secret review
   token; paid orders, products in the order, one per product per order).
@@ -225,6 +229,34 @@ FEATURES only, never for product rules.**
   `shop_option_presets` (members only): favourite option types with ordered
   values; Step 9 uses them as one-tap presets. "Smart size order":
   `lib/settings/size-order.ts`.
+- **Inventory** (Step 9): `/dashboard/inventory` (list: search, filters,
+  sort, quick stock), `/new` (add; `?from=<id>` = duplicate: options copied,
+  stock boxes EMPTY, no own prices, no photos, no code), `/[id]` (edit,
+  photos, quick stock, Who bought it, Stock history). Members add/edit;
+  OWNERS delete (orders keep their copies; photo files used by orders stay).
+  - One save = `save_product(shop, product|null, data)` (all or nothing:
+    item, option types/values, full stock grid, value photos, cost for
+    owners only). Each stock box sends `stock_base` (value when the page
+    opened): untouched boxes keep the CURRENT stock, a changed box that also
+    changed meanwhile is refused ("reload").
+  - Changing option types (browser, `lib/inventory/form.ts`): adding a 2nd
+    type puts the old stock under its FIRST value; removing a type adds the
+    stock up per remaining value; warning + confirm before saving.
+  - Quick stock: `change_stock(product, variant, delta, set)` (never below
+    0; untracked → "Start counting" = set 0).
+  - Stock history `stock_changes`: written ONLY by triggers on
+    products/product_variants stock; the reason comes from
+    `set_config('app.stock_reason', …)` (save_product = edit, change_stock =
+    quick_stock, place_order = order_placed, cancel/refuse = order_cancelled /
+    order_refused, with `app.stock_order_id`). Read-only for members.
+  - "Who bought it": `product_buyers(product)` (members, no cancelled).
+  - Photos: bucket `product-photos` (public read, 300 KB), files
+    `<shop>/<product>/<uuid>.webp`, members of that shop only, and only for a
+    product of that shop (`private.can_manage_product_photo`). Max photos per
+    item = `plan_limits.max_product_photos` by `shops.plan` (ONE place;
+    platform-only: shops can read, never change it or their plan). New items:
+    photos upload after the item is saved; failures delete the uploaded files.
+    `product_option_values.photo_id` = photo per option value (Step 10 shows it).
 - Making someone a shop owner (until shop sign-up exists):
   `supabase/snippets/make_shop_owner.sql` (email typed there, never in code).
   Re-running `seed.sql` removes the demo shop's members → run it again.
@@ -288,9 +320,8 @@ Plan (no redesign needed):
   status guard only allows unconfirmed/pending on insert).
 - **Stock back for deleted options:** if an option is deleted, its order
   lines lose `variant_id`; cancelling such an order can't return that stock.
-- **Photos:** the Supabase Storage bucket `product-photos` and product
-  uploads are not set up yet (placeholders are shown). `shop-assets` (logo,
-  share image) is done.
+- **Photos:** `product-photos` and `shop-assets` buckets are set up. The shop
+  page doesn't switch photos per option value yet (Step 10).
 - **Deposits / WhatsApp templates** are settings only; the invoice buttons
   (Request deposit, Mark deposit paid, send messages) come in Step 11.
 - **Unsaved-changes warning** covers tab close and in-app links, not the
