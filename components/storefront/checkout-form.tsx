@@ -132,8 +132,10 @@ export function CheckoutForm({
             <Choice name="method" value="delivery" checked={method === "delivery"}
               onChange={() => setMethod("delivery")} title={t.checkout.delivery} hint={t.checkout.deliveryHint} />
           )}
-          <Choice name="method" value="pickup" checked={method === "pickup"}
-            onChange={() => setMethod("pickup")} title={t.checkout.pickup} hint={t.checkout.pickupHint} />
+          {shop.pickupOn && (
+            <Choice name="method" value="pickup" checked={method === "pickup"}
+              onChange={() => setMethod("pickup")} title={t.checkout.pickup} hint={t.checkout.pickupHint} />
+          )}
         </div>
         {!shop.deliveryOn && <p className="text-sm text-zinc-500">{t.checkout.deliveryNotAvailable}</p>}
         {method === "delivery" && shop.deliveryNote && <p className="text-sm text-zinc-500">{shop.deliveryNote}</p>}

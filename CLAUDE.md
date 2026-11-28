@@ -126,7 +126,13 @@ FEATURES only, never for product rules.**
   box when `shops.policy_on`. The success page shows ONLY the receipt
   from a short-lived httpOnly cookie scoped to that order's path — it never
   reads orders from the DB, so other order numbers reveal nothing.
-- Shop public settings (columns on `shops`): delivery_on, delivery_mode,
+- **Pickup is a per-shop toggle** (`shops.pickup_on`, OFF by default → new
+  shops are delivery-only). A shop must keep delivery or pickup on
+  (`shops_delivery_or_pickup`). Checkout shows Pickup only when it's on;
+  `place_order` refuses pickup otherwise. Free-delivery amount and
+  per-governorate availability are each shop's own choice (back-office
+  settings, Step 11) — the demo's $60 / "no Akkar" are just seed examples.
+- Shop public settings (columns on `shops`): delivery_on, pickup_on, delivery_mode,
   delivery_fixed, free_delivery_*, delivery_note, description_on, policy_on,
   policy_text, low_stock_at, socials, colors, hero_text, reviews_on.
   Per-governorate fees: `shop_delivery_fees` (no row / null = no delivery).

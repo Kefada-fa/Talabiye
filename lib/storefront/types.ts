@@ -10,6 +10,7 @@ export type StoreShop = {
   logoUrl: string | null;
   whatsappNumber: string | null;
   deliveryOn: boolean;
+  pickupOn: boolean; // off by default: delivery-only shops
   deliveryMode: "fixed" | "governorate";
   deliveryFixed: number;
   freeDeliveryOn: boolean;

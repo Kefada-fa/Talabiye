@@ -32,6 +32,7 @@ export const en = {
     deliveryFixed: "Delivery: {fee}",
     freeDeliveryAbove: "Free delivery on orders of {amount} or more",
     pickupOnly: "Pickup only",
+    pickupAvailable: "Pickup available",
     chatOnWhatsapp: "Chat on WhatsApp",
   },
 

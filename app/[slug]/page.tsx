@@ -38,6 +38,7 @@ async function deliverySummary(shop: StoreShop): Promise<string> {
   if (shop.freeDeliveryOn && shop.freeDeliveryAbove !== null) {
     parts.push(fill(t.shop.freeDeliveryAbove, { amount: formatPrice(shop.freeDeliveryAbove) }));
   }
+  if (shop.pickupOn) parts.push(t.shop.pickupAvailable);
   return parts.join(" · ");
 }
 

@@ -32,7 +32,7 @@ export const getShopBySlug = cache(async (slug: string): Promise<StoreShop | nul
   const { data, error } = await supabase
     .from("shops")
     .select(
-      "id, name, slug, description, logo_url, whatsapp_number, delivery_on, delivery_mode, " +
+      "id, name, slug, description, logo_url, whatsapp_number, delivery_on, pickup_on, delivery_mode, " +
         "delivery_fixed, free_delivery_on, free_delivery_above, delivery_note, description_on, " +
         "policy_on, policy_text, low_stock_at, hero_text",
     )
@@ -52,6 +52,7 @@ export const getShopBySlug = cache(async (slug: string): Promise<StoreShop | nul
     logoUrl: (s.logo_url as string | null) ?? null,
     whatsappNumber: (s.whatsapp_number as string | null) ?? null,
     deliveryOn: Boolean(s.delivery_on),
+    pickupOn: Boolean(s.pickup_on),
     deliveryMode: s.delivery_mode === "governorate" ? "governorate" : "fixed",
     deliveryFixed: Number(s.delivery_fixed ?? 0),
     freeDeliveryOn: Boolean(s.free_delivery_on),
